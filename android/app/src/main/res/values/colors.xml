@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Warm Neutral Archetype matching Web App -->
+    <color name="karishma_bg">#FAF8F5</color>
+    <color name="karishma_surface">#FFFFFF</color>
+    <color name="karishma_border">#EBE6DD</color>
+    <color name="karishma_accent">#D96B43</color>
+    <color name="karishma_accent_hover">#C45A33</color>
+    <color name="karishma_text_primary">#2C2A29</color>
+    <color name="karishma_text_secondary">#8C857E</color>
+    <color name="karishma_user_bubble">#D96B43</color>
+    <color name="karishma_ai_bubble">#FFFFFF</color>
+</resources>

@@ -1,0 +1,121 @@
+                          onClick={() => { setAccountView("create"); setAuthError(""); }}
+                          className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${accountView === "create" ? "bg-white text-[#D96B43] shadow-sm" : "text-[#8C857E]"}`}
+                        >
+                          Create Account
+                        </button>
+                      </div>
+                    )}
+
+                    {authError && (
+                      <div className="bg-rose-50 text-rose-600 text-xs font-bold p-3 rounded-xl mb-4 border border-rose-100">
+                        {authError}
+                      </div>
+                    )}
+
+
+                    {accountView === "forgot" && (
+                      <div className="space-y-6">
+                        <div className="text-center mb-6">
+                          <div className="w-12 h-12 bg-[#F3D9C9] rounded-xl mx-auto flex items-center justify-center mb-3">
+                            <Lock className="w-6 h-6 text-[#D96B43]" />
+                          </div>
+                          <h3 className="text-lg font-bold text-[#2C2A29]">Reset Password</h3>
+                          <p className="text-xs text-[#8C857E] mt-1">Enter your email to receive a reset code.</p>
+                        </div>
+
+                        {authError && <div className="p-3 bg-rose-50 text-rose-600 text-xs font-bold rounded-lg">{authError}</div>}
+                        
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-xs font-bold text-[#5C5753] mb-1.5 ml-1">Email Address</label>
+                            <input
+                              type="email"
+                              placeholder="you@example.com"
+                              value={resetEmail}
+                              onChange={e => setResetEmail(e.target.value)}
+                              className="w-full bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#D96B43] focus:border-transparent transition-all"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          <button
+                            disabled={authLoading}
+                            onClick={async () => {
+                              if (!resetEmail || !resetEmail.includes("@")) return setAuthError("Please enter a valid email.");
+                              setAuthLoading(true); setAuthError("");
+                              try {
+                                const res = await fetch("/api/auth/forgot-password", {
+                                  method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ email: resetEmail })
+                                });
+                                const data = await res.json();
+                                if (!res.ok) throw new Error(data.error || "Failed to send reset email.");
+                                setAccountView("reset");
+                              } catch (err: any) {
+                                setAuthError(err.message);
+                              } finally {
+                                setAuthLoading(false);
+                              }
+                            }}
+                            className="w-full bg-[#2C2A29] hover:bg-black text-white text-sm font-bold py-3.5 rounded-xl transition-all shadow-md shadow-black/10 disabled:opacity-50"
+                          >
+                            {authLoading ? "Sending Code..." : "Send Reset Code"}
+                          </button>
+                          
+                          <button
+                            onClick={() => { setAccountView("login"); setAuthError(""); }}
+                            className="w-full bg-white border border-[#EBE6DD] hover:bg-[#FAF8F5] text-[#5C5753] text-sm font-bold py-3.5 rounded-xl transition-colors"
+                          >
+                            Back to Login
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {accountView === "reset" && (
+                      <div className="space-y-6">
+                        <div className="text-center mb-6">
+                          <h3 className="text-lg font-bold text-[#2C2A29]">Check your email</h3>
+                          <p className="text-xs text-[#8C857E] mt-1">We sent a 6-digit code to <strong>{resetEmail}</strong></p>
+                        </div>
+
+                        {authError && <div className="p-3 bg-rose-50 text-rose-600 text-xs font-bold rounded-lg">{authError}</div>}
+                        
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-xs font-bold text-[#5C5753] mb-1.5 ml-1">Reset Code</label>
+                            <input
+                              type="text"
+                              maxLength={6}
+                              placeholder="000000"
+                              value={resetOtp}
+                              onChange={e => setResetOtp(e.target.value.replace(/[^0-9]/g, ""))}
+                              className="w-full bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl px-4 py-3 text-center text-lg tracking-widest font-bold focus:outline-none focus:ring-2 focus:ring-[#D96B43] focus:border-transparent transition-all"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-[#5C5753] mb-1.5 ml-1">New Password</label>
+                            <input
+                              type="password"
+                              placeholder="Min. 8 characters"
+                              value={resetNew}
+                              onChange={e => setResetNew(e.target.value)}
+                              className="w-full bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#D96B43] focus:border-transparent transition-all"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-[#5C5753] mb-1.5 ml-1">Confirm Password</label>
+                            <input
+                              type="password"
+                              placeholder="Min. 8 characters"
+                              value={resetConfirm}
+                              onChange={e => setResetConfirm(e.target.value)}
+                              className="w-full bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#D96B43] focus:border-transparent transition-all"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          <button
+                            disabled={authLoading}

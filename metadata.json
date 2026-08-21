@@ -1,0 +1,10 @@
+{
+  "name": "Karishma-1",
+  "description": "An interactive, supportive, and emotionally intelligent AI companion with Google Search, secure data privacy, MFA, and Google Workspace integration for Calendar and Drive.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,195 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* Custom fine-tunings for our warm minimalist theme */
+body {
+  background-color: #FAF8F5;
+  color: #2C2A29;
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background-color: #F3D9C9;
+  color: #2C2A29;
+}
+
+.markdown-body p:not(:last-child) {
+  margin-bottom: 0.75em;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.markdown-body li {
+  margin-bottom: 0.25em;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+.markdown-body img {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+/* ================= THEME OVERRIDES ================= */
+
+/* DARK MODE OVERRIDES */
+html.theme-dark,
+html.theme-dark body {
+  background-color: #121212 !important;
+  color: #F4F4F5 !important;
+}
+
+html.theme-dark .bg-\[\#FAF8F5\],
+html.theme-dark .bg-\[\#FCFAF7\],
+html.theme-dark .bg-\[\#FAF0E6\]\/50 {
+  background-color: #18181B !important;
+}
+
+html.theme-dark .bg-white {
+  background-color: #27272A !important;
+  color: #F4F4F5 !important;
+}
+
+html.theme-dark .bg-\[\#FAF0E6\] {
+  background-color: #2D201A !important;
+}
+
+html.theme-dark .bg-\[\#EBE6DD\],
+html.theme-dark .bg-\[\#E2DCD3\],
+html.theme-dark .bg-\[\#DFD9D0\] {
+  background-color: #3F3F46 !important;
+  color: #F4F4F5 !important;
+}
+
+html.theme-dark .border-\[\#EBE6DD\],
+html.theme-dark .border-\[\#DFD9D0\],
+html.theme-dark .border-\[\#EBE6DD\]\/80,
+html.theme-dark .border-\[\#F3D9C9\] {
+  border-color: #3F3F46 !important;
+}
+
+html.theme-dark .text-\[\#2C2A29\] {
+  color: #F4F4F5 !important;
+}
+
+html.theme-dark .text-\[\#5C5753\] {
+  color: #E4E4E7 !important;
+}
+
+html.theme-dark .text-\[\#8C857E\],
+html.theme-dark .text-\[\#B3ABA3\] {
+  color: #A1A1AA !important;
+}
+
+html.theme-dark input,
+html.theme-dark textarea {
+  background-color: #18181B !important;
+  color: #F4F4F5 !important;
+  border-color: #3F3F46 !important;
+}
+
+html.theme-dark input::placeholder,
+html.theme-dark textarea::placeholder {
+  color: #71717A !important;
+}
+
+html.theme-dark .markdown-body {
+  color: #E4E4E7 !important;
+}
+
+html.theme-dark .markdown-body h1,
+html.theme-dark .markdown-body h2,
+html.theme-dark .markdown-body h3,
+html.theme-dark .markdown-body h4,
+html.theme-dark .markdown-body strong {
+  color: #FFFFFF !important;
+}
+
+html.theme-dark .markdown-body code {
+  background-color: #18181B !important;
+  color: #F4F4F5 !important;
+}
+
+html.theme-dark .markdown-body pre {
+  background-color: #18181B !important;
+  border-color: #3F3F46 !important;
+  color: #F4F4F5 !important;
+}
+
+/* LIGHT MODE OVERRIDES */
+html.theme-light,
+html.theme-light body {
+  background-color: #F8FAFC !important;
+  color: #0F172A !important;
+}
+
+html.theme-light .bg-\[\#FAF8F5\],
+html.theme-light .bg-\[\#FCFAF7\],
+html.theme-light .bg-\[\#FAF0E6\]\/50 {
+  background-color: #F1F5F9 !important;
+}
+
+html.theme-light .bg-white {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+
+html.theme-light .bg-\[\#EBE6DD\],
+html.theme-light .bg-\[\#E2DCD3\],
+html.theme-light .bg-\[\#DFD9D0\] {
+  background-color: #E2E8F0 !important;
+  color: #0F172A !important;
+}
+
+html.theme-light .border-\[\#EBE6DD\],
+html.theme-light .border-\[\#DFD9D0\],
+html.theme-light .border-\[\#F3D9C9\] {
+  border-color: #E2E8F0 !important;
+}
+
+html.theme-light .text-\[\#2C2A29\] {
+  color: #0F172A !important;
+}
+
+html.theme-light .text-\[\#5C5753\] {
+  color: #334155 !important;
+}
+
+html.theme-light .text-\[\#8C857E\],
+html.theme-light .text-\[\#B3ABA3\] {
+  color: #64748B !important;
+}
+
+html.theme-light input,
+html.theme-light textarea {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  border-color: #CBD5E1 !important;
+}
+
+html.theme-light input::placeholder,
+html.theme-light textarea::placeholder {
+  color: #94A3B8 !important;
+}
+
+
+

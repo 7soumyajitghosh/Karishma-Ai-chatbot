@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    match /users/{userId} {
+      allow get, list, write: if isValidId(userId);
+
+      match /{allPaths=**} {
+        allow get, list, write: if true;
+      }
+    }
+
+    // Account Records
+    match /accounts/{accountId} {
+      allow get, list, write: if true;
+    }
+
+    // Default deny all other unmapped paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "Conversation": {
+      "title": "Conversation",
+      "description": "User chat conversation session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "mode": { "type": "string" },
+        "messages": { "type": "array" }
+      },
+      "required": ["id", "userId", "messages"]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "User account profile document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}/conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "User conversations subcollection"
+    },
+    "users/{userId}": {
+      "schema": "Account",
+      "description": "User document"
+    },
+    "accounts/{accountId}": {
+      "schema": "Account",
+      "description": "Account document by email"
+    }
+  }
+}
