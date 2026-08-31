@@ -22,11 +22,18 @@ export interface PersistedChatSession {
 
 let client: SupabaseClient | null = null;
 
+export function isSupabaseConfigured(): boolean {
+  return Boolean(
+    process.env.SUPABASE_URL &&
+    (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY)
+  );
+}
+
 function getClient(): SupabaseClient {
   if (client) return client;
 
   const url = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
   if (!url || !serviceRoleKey) {
     throw new Error("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
   }
@@ -35,6 +42,14 @@ function getClient(): SupabaseClient {
     auth: { autoRefreshToken: false, persistSession: false },
   });
   return client;
+}
+
+function normalizeRole(role?: string): "user" | "assistant" | "system" | "model" {
+  const r = (role || "").toLowerCase().trim();
+  if (r === "user") return "user";
+  if (r === "system") return "system";
+  if (r === "model") return "model";
+  return "assistant";
 }
 
 function toTimestamp(value?: string): string | undefined {
@@ -128,7 +143,7 @@ export async function saveConversation(userId: string, session: PersistedChatSes
     .map((message) => ({
       id: message.id || randomUUID(),
       conversation_id: session.id,
-      role: message.role || "user",
+      role: normalizeRole(message.role),
       content: message.text,
       client_timestamp: message.timestamp || null,
       is_encrypted: Boolean(message.isEncrypted),
@@ -154,4 +169,59 @@ export async function deleteConversation(userId: string, sessionId: string): Pro
 
   if (error) throw new Error(`Supabase conversation delete failed: ${error.message}`);
   return Boolean(data?.length);
+}
+
+export interface PersistedUser {
+  id: string;
+  email: string;
+  name: string;
+  password?: string;
+  createdAt?: number | string;
+  updatedAt?: number | string;
+  sessionTokens?: string[];
+}
+
+export async function findUserByEmailSupabase(emailRaw: string): Promise<PersistedUser | null> {
+  if (!isSupabaseConfigured() || !emailRaw) return null;
+  try {
+    const supabase = getClient();
+    const cleanEmail = emailRaw.trim().toLowerCase();
+    const { data, error } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return {
+      id: data.id,
+      email: data.email,
+      name: data.name,
+      password: data.password || undefined,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+      sessionTokens: Array.isArray(data.session_tokens) ? data.session_tokens : [],
+    };
+  } catch (err) {
+    console.warn("Supabase findUserByEmail error:", err);
+    return null;
+  }
+}
+
+export async function upsertUserSupabase(user: PersistedUser): Promise<void> {
+  if (!isSupabaseConfigured() || !user || !user.email) return;
+  try {
+    const supabase = getClient();
+    const row = {
+      id: user.id || randomUUID(),
+      email: user.email.trim().toLowerCase(),
+      name: user.name,
+      password: user.password || null,
+      session_tokens: user.sessionTokens || [],
+      updated_at: new Date().toISOString(),
+    };
+    await supabase.from("users").upsert(row, { onConflict: "email" });
+  } catch (err) {
+    console.warn("Supabase upsertUser error:", err);
+  }
 }

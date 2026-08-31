@@ -31,7 +31,7 @@ import {
   isPuterAvailable,
   diagnoseWithClaudePuter,
 } from "./server/selfRepairEngine";
-import { deleteConversation, getConversationHistory, saveConversation } from "./server/supabaseHistory";
+import { deleteConversation, getConversationHistory, saveConversation, findUserByEmailSupabase, upsertUserSupabase } from "./server/supabaseHistory";
 
 dotenv.config();
 
@@ -137,6 +137,9 @@ function sanitizeSecrets(text: string): string {
     process.env.POLLINATIONS_API_KEY,
     process.env.POLLINATIONS_KEY,
     process.env.FIREBASE_PRIVATE_KEY,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    process.env.SUPABASE_KEY,
+    process.env.SUPABASE_ANON_KEY,
   ].filter((k): k is string => Boolean(k && k.length > 5));
 
   for (const key of sensitiveKeys) {
@@ -373,6 +376,41 @@ function detectImagePrompt(text: string): string | null {
   return null;
 }
 
+// Keyless Pollinations helper for 402/Credit Exhausted situations
+async function fetchKeylessPollinations(systemInstruction: string, messages: any[]): Promise<string | null> {
+  try {
+    const formattedMsgs = [
+      ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+      ...messages.slice(-8).map((m: any) => {
+        let content = m.text || "";
+        if (typeof m.content === "string") content = m.content;
+        return { role: m.role === "user" ? "user" : "assistant", content: content || "Hello" };
+      })
+    ];
+    const res = await fetch("https://text.pollinations.ai/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: formattedMsgs,
+        model: "openai"
+      })
+    });
+    if (res.ok) {
+      const rawText = await res.text();
+      try {
+        const data = JSON.parse(rawText);
+        if (data?.choices?.[0]?.message?.content) {
+          return data.choices[0].message.content.trim();
+        }
+      } catch {}
+      if (rawText && rawText.trim()) return rawText.trim();
+    }
+  } catch (err: any) {
+    console.warn("Keyless Pollinations fallback error:", sanitizeSecrets(err?.message || String(err)));
+  }
+  return null;
+}
+
 // Pollinations Text AI fallback (using enter.pollinations.ai / gen.pollinations.ai)
 export async function generateChatWithPollinations(
   systemInstruction: string,
@@ -434,6 +472,12 @@ export async function generateChatWithPollinations(
           }
         }
 
+        if (res.status === 402 || res.status === 401 || res.status === 403) {
+          console.warn(`Pollinations API returned HTTP ${res.status}. Falling back to keyless Pollinations endpoint.`);
+          const keylessText = await fetchKeylessPollinations(systemInstruction, messages);
+          if (keylessText) return keylessText;
+        }
+
         const errBody = await res.text();
         const err = new Error(`Pollinations HTTP ${res.status} Body: ${errBody}`);
         (err as any).status = res.status;
@@ -445,15 +489,15 @@ export async function generateChatWithPollinations(
     return resultText;
   } catch (err: any) {
     const errMsg = sanitizeSecrets(err?.message || String(err));
-    if (errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("budget too low")) {
-      console.warn("Pollinations Chat Fallback skipped: Zero pollen balance / payment required (402).");
-    } else if (errMsg.includes("401") || errMsg.includes("403") || errMsg.includes("Authentication failure")) {
-      console.warn("Pollinations Chat Fallback skipped: Authentication failure / missing API key (401/403).");
+    if (errMsg.includes("402") || errMsg.includes("401") || errMsg.includes("403")) {
+      console.warn("Pollinations Chat key-based API skipped. Trying keyless Pollinations endpoint directly.");
+      return await fetchKeylessPollinations(systemInstruction, messages);
     } else {
       console.error("Pollinations Chat Fallback Error:", errMsg);
     }
   }
-  return null;
+
+  return await fetchKeylessPollinations(systemInstruction, messages);
 }
 
 // Chat generation helper using Gemini API via @google/genai
@@ -676,51 +720,46 @@ interface ChatMessage {
 }
 
 
-const DB_FILE = path.join(process.cwd(), "db.json");
-
 // Define basic stores
 let usersStore = new Map<string, User>();
 let sessionsDb = new Map<string, ChatSession>();
 let messagesDb = new Map<string, ChatMessage>();
 
-// Load from DB
-try {
-  if (fs.existsSync(DB_FILE)) {
-    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-    if (data.users) usersStore = new Map(data.users);
-    if (data.sessions) sessionsDb = new Map(data.sessions);
-    if (data.messages) messagesDb = new Map(data.messages);
-  }
-} catch (e) {
-  console.error("Failed to load DB", e);
-}
-
 const saveDb = () => {
-  try {
-    const data = {
-      users: Array.from(usersStore.entries()),
-      sessions: Array.from(sessionsDb.entries()),
-      messages: Array.from(messagesDb.entries()),
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    console.error("Failed to save DB", e);
-  }
+  // Deprecated db.json disk storage removed. Persistent data is saved in Supabase & Firestore.
 };
 
-// Firestore User Account Management (Persistent Source of Truth)
+// Firestore & Supabase User Account Management (Persistent Source of Truth)
 async function findUserByEmail(emailRaw: string): Promise<User | null> {
   if (!emailRaw || typeof emailRaw !== "string") return null;
   const cleanEmail = emailRaw.trim().toLowerCase();
 
-  // 1. Direct Firestore lookup in "accounts" by clean email document key
+  // 1. Direct Supabase lookup
+  try {
+    const sbUser = await findUserByEmailSupabase(cleanEmail);
+    if (sbUser) {
+      const userData: User = {
+        id: sbUser.id,
+        email: sbUser.email,
+        name: sbUser.name,
+        password: sbUser.password,
+        createdAt: typeof sbUser.createdAt === "number" ? sbUser.createdAt : Date.now(),
+      };
+      usersStore.set(cleanEmail, userData);
+      return userData;
+    }
+  } catch (err) {
+    console.warn("Supabase findUserByEmail lookup warning:", err);
+  }
+
+  // 2. Direct Firestore lookup in "accounts" by clean email document key
   try {
     const accDoc = await getDoc(doc(firestoreDb, "accounts", cleanEmail));
     if (accDoc.exists()) {
       const userData = accDoc.data() as User;
       if (userData) {
         usersStore.set(cleanEmail, userData);
-        saveDb();
+        upsertUserSupabase(userData).catch(() => {});
         return userData;
       }
     }
@@ -728,7 +767,7 @@ async function findUserByEmail(emailRaw: string): Promise<User | null> {
     console.warn("Firestore findUserByEmail lookup warning:", err);
   }
 
-  // 2. Secondary Firestore query on "users" collection
+  // 3. Secondary Firestore query on "users" collection
   try {
     const q = query(collection(firestoreDb, "users"), where("email", "==", cleanEmail));
     const snap = await getDocs(q);
@@ -736,7 +775,7 @@ async function findUserByEmail(emailRaw: string): Promise<User | null> {
       const userData = snap.docs[0].data() as User;
       if (userData) {
         usersStore.set(cleanEmail, userData);
-        saveDb();
+        upsertUserSupabase(userData).catch(() => {});
         return userData;
       }
     }
@@ -744,7 +783,7 @@ async function findUserByEmail(emailRaw: string): Promise<User | null> {
     console.warn("Firestore findUserByEmail query warning:", err);
   }
 
-  // 3. Fallback to local in-memory store
+  // 4. Fallback to local in-memory store
   return usersStore.get(cleanEmail) || Array.from(usersStore.values()).find(u => u?.email?.trim().toLowerCase() === cleanEmail) || null;
 }
 
@@ -767,7 +806,7 @@ async function findUserById(userId: string): Promise<User | null> {
       const userData = userDoc.data() as User;
       if (userData && userData.email) {
         usersStore.set(userData.email.trim().toLowerCase(), userData);
-        saveDb();
+        upsertUserSupabase(userData).catch(() => {});
       }
       return userData;
     }
@@ -796,13 +835,15 @@ async function saveUserToFirestore(user: User): Promise<boolean> {
   };
 
   try {
+    // Save to Supabase
+    upsertUserSupabase(userRecord).catch((e) => console.warn("Supabase user sync warning:", e));
+
     // Save to Firestore "accounts" collection (indexed by clean email) and "users" collection (indexed by userId)
     await setDoc(doc(firestoreDb, "accounts", cleanEmail), userRecord, { merge: true });
     if (userId) {
       await setDoc(doc(firestoreDb, "users", userId), userRecord, { merge: true });
     }
     usersStore.set(cleanEmail, userRecord);
-    saveDb();
     return true;
   } catch (err) {
     console.error("Failed to save user record to Firestore:", err);
@@ -820,7 +861,6 @@ async function syncUsersFromFirestoreOnStartup() {
       }
     });
     console.log(`Synced ${snap.size} user accounts from Firestore.`);
-    saveDb();
   } catch (err) {
     console.warn("Failed to sync users from Firestore on startup:", err);
   }
@@ -1619,10 +1659,8 @@ app.post("/api/test/privacy-isolation", async (req, res) => {
     // 1. Register two test users
     const userA: User = { id: userA_Id, email: `usera_${userA_Id}@test.com`, name: "User A", createdAt: Date.now() };
     const userB: User = { id: userB_Id, email: `userb_${userB_Id}@test.com`, name: "User B", createdAt: Date.now() };
-
     usersStore.set(userA.email, userA);
     usersStore.set(userB.email, userB);
-    saveDb();
 
     logs.push(`Created User A (${userA_Id}) and User B (${userB_Id}).`);
 
@@ -1665,7 +1703,6 @@ app.post("/api/test/privacy-isolation", async (req, res) => {
       timestamp: "12:05 PM"
     });
     sessionMessagesIdx.set(sessionBId, ["msg_b_1"]);
-    saveDb();
 
     // 4. Test Query User A history
     const userASessions = Array.from(sessionsDb.values()).filter(s => s.userId === userA_Id);
@@ -1700,7 +1737,6 @@ app.post("/api/test/privacy-isolation", async (req, res) => {
     sessionsDb.delete(sessionBId);
     usersStore.delete(userA.email);
     usersStore.delete(userB.email);
-    saveDb();
 
     logs.push("Test 4 Passed: Cleaned up test entities.");
 
@@ -1987,29 +2023,10 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
   return Array.from(new Set(list.filter(Boolean)));
 }
 
-    // 1. Primary provider: native Google Gemini API for all normal chat requests.
-    // Non-Gemini UI model selections use Gemini's configured default model list.
     const isGeminiRequested = Boolean(model && (model.startsWith("google/") || model.includes("gemini")));
 
-    if (activeGeminiClient) {
-      const geminiResult = await generateChatWithGemini(
-        systemInstruction,
-        messages,
-        attachment,
-        isGeminiRequested ? model : undefined,
-        activeGeminiClient
-      );
-      if (geminiResult.text) {
-        textResponse = geminiResult.text;
-      } else {
-        console.warn("Gemini primary chat attempt failed:", geminiResult.error || "No response generated.");
-      }
-    } else {
-      console.warn("Gemini API client is not configured; trying fallback providers.");
-    }
-
-    // 2. Fallback: OpenRouter API (if configured and Gemini produced no response)
-    if (!textResponse && activeOpenRouterClient) {
+    // 1. Primary provider selection: If non-Gemini model (e.g. Nemotron/Llama/GPT) is requested, try OpenRouter first
+    if (!isGeminiRequested && activeOpenRouterClient) {
       const isImage = attachment && attachment.dataUrl && (
         attachment.isImage || 
         (attachment.type && attachment.type.startsWith("image/")) || 
@@ -2025,7 +2042,6 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
       let openRouterHasInsufficientCredits = false;
 
       for (const targetModel of candidates) {
-        // If we know this account has zero credits, skip non-free models
         if (openRouterHasInsufficientCredits && !targetModel.includes(":free")) {
           continue;
         }
@@ -2068,6 +2084,74 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
             console.warn(`OpenRouter model ${targetModel} requires credits (402). Skipping paid models.`);
           } else {
             console.warn(`OpenRouter model ${targetModel} attempt failed:`, errMsg);
+          }
+        }
+      }
+    }
+
+    // 2. Try Google Gemini API (if Gemini requested OR OpenRouter returned no response)
+    if (!textResponse && activeGeminiClient) {
+      const geminiResult = await generateChatWithGemini(
+        systemInstruction,
+        messages,
+        attachment,
+        isGeminiRequested ? model : undefined,
+        activeGeminiClient
+      );
+      if (geminiResult.text) {
+        textResponse = geminiResult.text;
+      } else {
+        console.warn("Gemini chat attempt failed:", geminiResult.error || "No response generated.");
+      }
+    }
+
+    // 3. Fallback to OpenRouter API if Gemini was requested but failed
+    if (!textResponse && isGeminiRequested && activeOpenRouterClient) {
+      const isImage = attachment && attachment.dataUrl && (
+        attachment.isImage || 
+        (attachment.type && attachment.type.startsWith("image/")) || 
+        attachment.dataUrl.startsWith("data:image/")
+      );
+      const candidates = getOpenRouterCandidateModels(model, !!isImage);
+
+      const openAiMessages = [
+        { role: "system", content: systemInstruction },
+        ...formattedHistory
+      ];
+
+      let openRouterHasInsufficientCredits = false;
+
+      for (const targetModel of candidates) {
+        if (openRouterHasInsufficientCredits && !targetModel.includes(":free")) {
+          continue;
+        }
+
+        try {
+          const response = await retryApiCall(
+            `OpenRouter Chat (${targetModel})`,
+            async () => {
+              return await activeOpenRouterClient!.chat.completions.create({
+                model: targetModel,
+                messages: openAiMessages as any,
+                temperature: 0.85,
+                max_tokens: 1000,
+              });
+            },
+            { maxRetries: 1, initialDelayMs: 400, timeoutMs: 15000 }
+          );
+
+          const messageObj = response?.choices?.[0]?.message as any;
+          const content = messageObj?.content || "";
+
+          if (content) {
+            textResponse = content;
+            break;
+          }
+        } catch (openRouterError: any) {
+          const errMsg = sanitizeSecrets(openRouterError?.message || String(openRouterError));
+          const status = openRouterError?.status || openRouterError?.statusCode;
+          if (status === 402 || errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("never purchased credits")) {
+            openRouterHasInsufficientCredits = true;
           }
         }
       }
