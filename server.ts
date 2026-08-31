@@ -50,7 +50,9 @@ const dbId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as a
 const firestoreDb = dbId ? getFirestore(firebaseApp, dbId) : getFirestore(firebaseApp);
 
 const app = express();
-const PORT = 3000;
+// Cloud Run (and most PaaS hosts) inject the port to listen on. Falls back to
+// 3000 so local `npm run dev` behaves exactly as before.
+const PORT = Number(process.env.PORT) || 3000;
 
 // Initialize GoogleGenAI SDK (only if a valid Google Gemini API key is provided)
 let googleGenAIClient: GoogleGenAI | null = null;
@@ -471,6 +473,41 @@ if (apiKey) {
 } else {
   console.warn("WARNING: OPENROUTER_API_KEY environment variable is missing.");
 }
+
+// ---------------------------------------------------------------------------
+// CORS for the Android (Capacitor) shell only.
+//
+// Inside the APK the web app is served from the WebView's own origin
+// (https://localhost) and calls this backend cross-origin, so without these
+// headers the browser blocks every /api request. Browser usage is unaffected:
+// same-origin requests never send an Origin the list below matches, and no
+// wildcard is used. Auth is header/localStorage based (no cookies), so
+// Access-Control-Allow-Credentials is deliberately not enabled.
+// ---------------------------------------------------------------------------
+const NATIVE_ORIGINS = new Set([
+  "https://localhost", // Capacitor Android with androidScheme: 'https'
+  "http://localhost", // Capacitor Android fallback scheme
+  "capacitor://localhost", // Capacitor iOS
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && NATIVE_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      req.headers["access-control-request-headers"] ?? "Content-Type, Authorization"
+    );
+    res.setHeader("Access-Control-Max-Age", "86400");
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
+  }
+  next();
+});
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -1017,9 +1054,10 @@ app.post("/api/auth/login", async (req, res) => {
 
 
 // Helper to convert raw 16-bit PCM buffer to WAV buffer
-function pcmToWav(pcmBuffer: Buffer, sampleRate = 24000, numChannels = 1, bitDepth = 16): Buffer {
+function pcmToWav(pcmBuffer: Buffer | Uint8Array | null | undefined, sampleRate = 24000, numChannels = 1, bitDepth = 16): Buffer {
+  const buf = pcmBuffer ? (Buffer.isBuffer(pcmBuffer) ? pcmBuffer : Buffer.from(pcmBuffer as any)) : Buffer.alloc(0);
   const header = Buffer.alloc(44);
-  const dataSize = pcmBuffer.length;
+  const dataSize = buf.length;
   const blockAlign = (numChannels * bitDepth) / 8;
   const byteRate = sampleRate * blockAlign;
 
@@ -1039,7 +1077,7 @@ function pcmToWav(pcmBuffer: Buffer, sampleRate = 24000, numChannels = 1, bitDep
   header.write("data", 36);
   header.writeUInt32LE(dataSize, 40);
 
-  return Buffer.concat([header, pcmBuffer]);
+  return Buffer.concat([header, buf]);
 }
 
 // Clean text helper for Speech Synthesis
@@ -1068,7 +1106,7 @@ function cleanTextForSpeech(rawText: string): string {
   text = text.replace(emojiRegex, " ");
 
   // 7. Strip brackets, code/math symbols, hyphens, slashes, colons, semicolons, quotes, etc. to spaces
-  text = text.replace(/[{}[\]()<>\/\\|@$%^&+=~_—–\-:;"'`]/g, " ");
+  text = text.replace(/[{}[\]()<>\/\\|@$%^&+=~_\u2013\u2014\-:;"'`]/g, " ");
 
   // 8. Convert exclamations and Bengali dari to period for clean sentence boundary pauses
   text = text.replace(/!+/g, ".");
@@ -1675,13 +1713,31 @@ app.post("/api/test/privacy-isolation", async (req, res) => {
   }
 });
 
+// Rate limiting helper
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+
+function isRateLimited(ip: string, limit: number = 40, windowMs: number = 60000): boolean {
+  const now = Date.now();
+  const record = rateLimitMap.get(ip);
+  if (!record || now > record.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+    return false;
+  }
+  if (record.count >= limit) {
+    return true;
+  }
+  record.count += 1;
+  return false;
+}
+
 // Chat endpoint
 app.post("/api/chat", async (req, res) => {
   try {
-    if (!ai) {
-      return res.status(500).json({
-        error: "OpenRouter API client is not initialized. Please verify your API key.",
-      });
+    const rawFwd = req.headers["x-forwarded-for"];
+    const fwdStr = Array.isArray(rawFwd) ? rawFwd[0] : (typeof rawFwd === "string" ? rawFwd : "");
+    const clientIp = (fwdStr || req.socket?.remoteAddress || "client").split(",")[0].trim();
+    if (isRateLimited(clientIp, 40, 60000)) {
+      return res.status(429).json({ error: "Too many requests. Please pause for a moment before sending another message." });
     }
 
     const { messages, model, responseMode, userName, attachment } = req.body;
@@ -1782,7 +1838,22 @@ CONVERSATIONAL PERSONALITY & RESPONSE BEHAVIOR:
 - Ignore Quick Mode limits and provide a complete answer.`;
     }
 
-    const formattedHistory = messages.map((m: any, index: number) => {
+    // Sliding context memory window: preserve system prompt + summary of older turns + recent N messages
+    let conversationMessages = messages;
+    if (messages.length > 12) {
+      const olderMessages = messages.slice(0, messages.length - 12);
+      conversationMessages = messages.slice(-12);
+      const summaryText = olderMessages
+        .filter((m: any) => m.text && typeof m.text === "string" && m.text.trim())
+        .slice(-6)
+        .map((m: any) => `${m.role === "user" ? "User" : "Karishma"}: ${m.text.slice(0, 100)}`)
+        .join(" | ");
+      if (summaryText) {
+        systemInstruction += `\n\nEARLIER CONVERSATION RECAP:\n${summaryText}`;
+      }
+    }
+
+    const formattedHistory = conversationMessages.map((m: any, index: number) => {
       const isLastUser = index === messages.length - 1 && m.role === "user";
       if (isLastUser && attachment && attachment.dataUrl) {
         const isImage = attachment.isImage || (attachment.type && attachment.type.startsWith("image/")) || attachment.dataUrl.startsWith("data:image/");

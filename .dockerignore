@@ -1,0 +1,13 @@
+node_modules
+dist
+android
+android-native-legacy
+.git
+.env
+.env.*
+db.json
+*.apk
+*.aab
+.gradle
+build
+BUILD-ANDROID.md

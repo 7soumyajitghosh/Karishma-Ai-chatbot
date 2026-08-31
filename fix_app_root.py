@@ -1,6 +1,6 @@
 import re
 
-with open('src/App.tsx', 'r') as f:
+with open('src/App.tsx', 'r', encoding='utf-8', errors='ignore') as f:
     content = f.read()
 
 # Replace the outer div
@@ -25,5 +25,6 @@ content = content.replace(old_div, new_div)
 
 content = content.replace('bg-[var(--bg-panel)] shadow-sm', 'bg-[var(--bg-panel)] shadow-sm') # It's already there
 
-with open('src/App.tsx', 'w') as f:
+with open('src/App.tsx', 'w', encoding='utf-8') as f:
     f.write(content)
+

@@ -3644,6 +3644,7 @@ function App() {
                           <span>Files</span>
                         </button>
                       </motion.div>
+                    {/* fragment removed */}
                   )}
                 </AnimatePresence>
 
@@ -4080,6 +4081,7 @@ function App() {
                                 </label>
                               </div>
                             </motion.div>
+                          {/* fragment removed */}
                         )}
                       </AnimatePresence>
                     </div>

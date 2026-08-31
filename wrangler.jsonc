@@ -1,0 +1,28 @@
+{
+  // Cloudflare Workers + Containers config. The Worker below is a thin router;
+  // all real work happens in the container, which runs the SAME server.ts
+  // (built to dist/server.cjs by the existing Dockerfile). No backend rewrite.
+  "name": "karishma",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Build + push the existing Dockerfile as the container image.
+  "containers": [
+    {
+      "class_name": "KarishmaContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1
+    }
+  ],
+
+  // Containers are backed by a Durable Object.
+  "durable_objects": {
+    "bindings": [
+      { "name": "KARISHMA_CONTAINER", "class_name": "KarishmaContainer" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["KarishmaContainer"] }
+  ]
+}
