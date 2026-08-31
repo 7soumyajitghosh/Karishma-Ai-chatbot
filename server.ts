@@ -123,6 +123,7 @@ async function retryApiCall<T>(
       const status = err?.status || err?.statusCode || err?.response?.status;
       const rawMsg = err?.message || String(err);
       const msg = sanitizeSecrets(rawMsg).toLowerCase();
+      console.log(`[DEBUG] Raw retry error for ${actionName}:`, rawMsg, "status:", status);
 
       // Check for non-retryable errors (Auth failure, payment/credits required, bad client request, model not found, daily quota exhaustion)
       const isAuthError = status === 401 || status === 403 || msg.includes("api key") || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("invalid key");
@@ -289,37 +290,32 @@ function detectImagePrompt(text: string): string | null {
 }
 
 // Pollinations Text AI fallback (Free, keyless AI completion engine)
-async function generateChatWithPollinations(
+export async function generateChatWithPollinations(
   systemInstruction: string,
   messages: any[]
 ): Promise<string | null> {
   try {
+    const conversationHistory = messages.slice(-8).map((m: any) => {
+      let content = m.text || "";
+      if (typeof m.content === "string") content = m.content;
+      return `${m.role === "user" ? "User" : "Karishma"}: ${content}`;
+    }).join("\n");
+
+    const flattenedPrompt = `${systemInstruction}\n\nHere is the recent conversation:\n${conversationHistory}\n\nKarishma:`;
+
     const formattedMsgs = [
-      { role: "system", content: systemInstruction },
-      ...messages.slice(-8).map((m: any) => {
-        let content = m.text || "";
-        if (typeof m.content === "string") content = m.content;
-        return {
-          role: m.role === "user" ? "user" : "assistant",
-          content: content || "Hello",
-        };
-      })
+      { role: "user", content: flattenedPrompt }
     ];
 
     const resultText = await retryApiCall(
       "Pollinations Chat Fallback",
       async (signal) => {
-        const res = await fetch("https://text.pollinations.ai/", {
-          method: "POST",
+        const encodedPrompt = encodeURIComponent(flattenedPrompt);
+        const res = await fetch(`https://text.pollinations.ai/${encodedPrompt}`, {
+          method: "GET",
           headers: {
-            "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
           },
-          body: JSON.stringify({
-            messages: formattedMsgs,
-            model: "openai",
-            seed: Math.floor(Math.random() * 1000000)
-          }),
           signal,
         });
 
@@ -329,7 +325,8 @@ async function generateChatWithPollinations(
             return text.trim();
           }
         }
-        throw new Error(`Pollinations HTTP ${res.status}`);
+        const errBody = await res.text();
+        throw new Error(`Pollinations HTTP ${res.status} Body: ${errBody}`);
       },
       { maxRetries: 1, initialDelayMs: 400, timeoutMs: 10000 }
     );
@@ -2069,7 +2066,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     }
 
     if (!textResponse) {
-      textResponse = "Hey! I'm having a little trouble connecting right now. Could you send that again?";
+      textResponse = "I'm sorry, but my AI providers (Gemini/OpenRouter) are not configured correctly or are out of credits. Please check the Render environment variables for GEMINI_API_KEY.";
     }
     
     return res.json({

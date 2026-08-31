@@ -3,18 +3,27 @@
     [
       "7soumyajitghosh@gmail.com",
       {
+        "email": "7soumyajitghosh@gmail.com",
         "createdAt": 1786256221722,
-        "password": "$2b$10$JPZdKFYUZ80ZPfH6aDK7Zu0EngzMFBFcPpTTOjeQ1/D/pmq..LVvO",
-        "name": "Soumyajit Ghosh",
         "sessionTokens": [
           "2e7b0257-326a-43c9-9b34-100763bc1ee8",
           "0ff70488-553f-4fa2-b269-dfe598fa3bd3",
           "226072b3-80db-4d52-b63b-bc8f6f83db70",
           "18fd6b3e-1cfa-4cc0-93f0-d04abf91c396",
-          "21f9c4f4-0c7a-4da3-bdc2-30e3e961a987"
+          "21f9c4f4-0c7a-4da3-bdc2-30e3e961a987",
+          "5c1ee370-fbe0-4b55-8f5b-d5fa254f7197",
+          "69ce4ae6-f154-4d80-b7b1-2d484478e1cc",
+          "ef3d298d-466c-4301-b7d8-0d457f9a638f",
+          "f548e940-4c44-444d-a30d-a33d09f80600",
+          "33c0880b-3e39-41fe-b159-86c1f009d930",
+          "d6970401-bec2-4e0d-b904-965d02dc4c0f",
+          "b63ea92a-dcef-46f1-b452-3ab0c941ada0",
+          "b06be570-d238-464a-af64-00cc4484907f",
+          "ea8f0c15-1a18-40b1-8b16-d265ac4126ed"
         ],
-        "updatedAt": 1786720510960,
-        "email": "7soumyajitghosh@gmail.com",
+        "name": "Soumyajit Ghosh",
+        "password": "$2b$10$JPZdKFYUZ80ZPfH6aDK7Zu0EngzMFBFcPpTTOjeQ1/D/pmq..LVvO",
+        "updatedAt": 1788179942137,
         "id": "c8aebeb3-5eba-4f0e-a5cc-163de6b8f575"
       }
     ],
@@ -32,35 +41,67 @@
     [
       "suvodipd440@gmail.com",
       {
-        "id": "b90cbe74-2b01-4a2e-aec2-0233c69715af",
+        "name": "Dip",
         "email": "suvodipd440@gmail.com",
+        "updatedAt": 1786534847944,
+        "fullName": "Suvodip",
+        "createdAt": 1786532348707,
         "password": "$2b$10$GqhWOf659a8gCAXga7sf6Oeivns./N56QnR80NKMWGfQTMoVEnC/C",
+        "nickname": "Dip",
         "sessionTokens": [
           "4f73b281-18a4-48af-878e-5d4528a88479",
           "da65befd-7225-4486-9fe8-c208fbb0185e",
           "fdfc92a7-1209-44ff-938d-e917f10e1600"
         ],
-        "updatedAt": 1786534847944,
-        "createdAt": 1786532348707,
-        "name": "Dip",
-        "fullName": "Suvodip",
-        "nickname": "Dip"
+        "id": "b90cbe74-2b01-4a2e-aec2-0233c69715af"
       }
     ],
     [
       "acnandita02@gmail.com",
       {
-        "email": "acnandita02@gmail.com",
-        "nickname": "Nandita",
+        "createdAt": 1786723497288,
+        "fullName": "Nandita Ghosh",
         "sessionTokens": [
           "82ead332-2b48-47d6-bf1a-abf48f37e0cd"
         ],
-        "fullName": "Nandita Ghosh",
-        "id": "c6f22f83-bbe6-4b6e-a5d0-bd5f5f85ab90",
-        "updatedAt": 1786723515656,
         "name": "Nandita",
-        "createdAt": 1786723497288,
+        "email": "acnandita02@gmail.com",
+        "id": "c6f22f83-bbe6-4b6e-a5d0-bd5f5f85ab90",
+        "nickname": "Nandita",
+        "updatedAt": 1786723515656,
         "password": "$2b$10$c/ERLYDvPx0Na4kU46KczuFZyk5QUvQB9c6FSO8qMqU1GhtFcmEs."
+      }
+    ],
+    [
+      "asimchampa75@gmail.com",
+      {
+        "password": "$2b$10$6AiBmXokcOoiOl65OFwfK.vFLRzD6L0CSKt0T9F2qdWcpa.Iu6pnm",
+        "updatedAt": 1786780655740,
+        "nickname": "Soumyajit",
+        "email": "asimchampa75@gmail.com",
+        "sessionTokens": [
+          "e80d7102-7da9-4e43-8f24-9736af285cb8"
+        ],
+        "name": "Soumyajit",
+        "id": "bbed7d90-349f-47e5-9ad2-b3258f8c12ae",
+        "fullName": "Soumyajit Ghosh",
+        "createdAt": 1786780627934
+      }
+    ],
+    [
+      "atrijobiswas@gmail.com",
+      {
+        "nickname": "Atj",
+        "email": "atrijobiswas@gmail.com",
+        "id": "99b9cda1-d8f9-48df-ab03-60778eb32655",
+        "createdAt": 1787672758843,
+        "password": "$2b$10$uDKNZq4mj8KFcdzq9iT0uOTp14DTlOLjzBvpRiQewMz/egy6x1wBy",
+        "updatedAt": 1787672779201,
+        "fullName": "Atrija Biswas",
+        "sessionTokens": [
+          "cd73e6a3-fbef-4123-a096-ea23a3c3724a"
+        ],
+        "name": "Atj"
       }
     ]
   ],
