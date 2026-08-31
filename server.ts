@@ -1975,22 +1975,27 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
   return Array.from(new Set(list.filter(Boolean)));
 }
 
-    // 1. First choice: If model is a Gemini model, try native Google Gemini API first
+    // 1. Primary provider: native Google Gemini API for all normal chat requests.
+    // Non-Gemini UI model selections use Gemini's configured default model list.
     const isGeminiRequested = Boolean(model && (model.startsWith("google/") || model.includes("gemini")));
 
-    if (isGeminiRequested) {
-      if (!googleGenAIClient) {
-        return res.status(503).json({ error: "Gemini API service is not initialized on the server." });
-      }
-      const geminiResult = await generateChatWithGemini(systemInstruction, messages, attachment, model);
+    if (googleGenAIClient) {
+      const geminiResult = await generateChatWithGemini(
+        systemInstruction,
+        messages,
+        attachment,
+        isGeminiRequested ? model : undefined
+      );
       if (geminiResult.text) {
         textResponse = geminiResult.text;
       } else {
-        return res.status(503).json({ error: geminiResult.error || `Gemini model '${model}' is currently unavailable. Please try again or select another model.` });
+        console.warn("Gemini primary chat attempt failed:", geminiResult.error || "No response generated.");
       }
+    } else {
+      console.warn("Gemini API client is not configured; trying fallback providers.");
     }
 
-    // 2. OpenRouter API (if configured and no response yet)
+    // 2. Fallback: OpenRouter API (if configured and Gemini produced no response)
     if (!textResponse && ai) {
       const isImage = attachment && attachment.dataUrl && (
         attachment.isImage || 
@@ -2055,16 +2060,8 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
       }
     }
 
-    // 3. Fallback to default Gemini API only if non-Gemini model was chosen and OpenRouter was not available
-    if (!textResponse && !isGeminiRequested && googleGenAIClient) {
-      const geminiResult = await generateChatWithGemini(systemInstruction, messages, attachment);
-      if (geminiResult.text) {
-        textResponse = geminiResult.text;
-      }
-    }
-
-    // 4. Universal Fallback: Free Pollinations AI Engine (only for non-Gemini requests)
-    if (!textResponse && !isGeminiRequested) {
+    // 3. Universal fallback: Free Pollinations AI Engine
+    if (!textResponse) {
       const polResult = await generateChatWithPollinations(systemInstruction, messages);
       if (polResult) {
         textResponse = polResult;
