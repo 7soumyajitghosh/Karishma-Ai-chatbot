@@ -403,12 +403,15 @@ async function generateChatWithGemini(
     const textModelsToTry = isSpecificGemini
       ? [requestedModel]
       : [
+          "gemini-2.5-flash",
+          "gemini-2.0-flash",
+          "gemini-1.5-flash",
+          "gemini-2.5-pro",
+          "gemini-1.5-pro",
           "gemini-3.5-flash",
           "gemini-3.1-pro-preview",
           "gemini-3-flash-preview",
           "gemini-3.1-flash-lite",
-          "gemini-2.5-pro",
-          "gemini-2.5-flash",
         ];
 
     let lastError: any = null;
@@ -1964,10 +1967,11 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     list.push("meta-llama/llama-3.1-8b-instruct");
   }
 
-  // Also include original model id as secondary option if not already present
-  if (normalizedModel && !normalizedModel.includes("gemini")) {
-    list.push(normalizedModel);
-  }
+  // Always append resilient free models in case of zero balance
+  list.push("meta-llama/llama-3.3-70b-instruct:free");
+  list.push("meta-llama/llama-3.1-8b-instruct:free");
+  list.push("google/gemini-2.0-flash-exp:free");
+  list.push("mistralai/mistral-7b-instruct:free");
 
   return Array.from(new Set(list.filter(Boolean)));
 }
