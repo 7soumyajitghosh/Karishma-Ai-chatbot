@@ -321,7 +321,7 @@ export const flushPendingSyncQueue = async (
 };
 
 /**
- * Save or update a single conversation in Firestore with conflict-resolution
+ * Save or update a single conversation through the server-side Supabase store.
  */
 export const saveConversationToCloud = async (
   userIdRaw: { id?: string; email?: string } | null | string,
@@ -329,72 +329,22 @@ export const saveConversationToCloud = async (
   enqueueOnFailure: boolean = true
 ): Promise<boolean> => {
   const userId = getCleanUserId(userIdRaw);
-  const docPath = `users/${userId}/conversations/${session.id}`;
-
   try {
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       if (enqueueOnFailure) enqueueSyncOperation(userId, "upsert", session.id, session);
       return false;
     }
 
-    await ensureFirebaseAuth();
-
-    const docRef = doc(db, "users", userId, "conversations", session.id);
-    const nowIso = new Date().toISOString();
-
-    // Check existing cloud version to prevent overwriting newer cloud data with older local data
-    let mergedSession: SyncChatSession = { ...session };
-    try {
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const cloudData = snap.data() as SyncChatSession;
-        const cloudTime = new Date(cloudData.updatedAt || cloudData.timestamp || 0).getTime();
-        const localTime = new Date(session.updatedAt || session.timestamp || 0).getTime();
-
-        const mergedMsgs = mergeSyncMessages(session.messages || [], cloudData.messages || []);
-
-        // Title selection logic: prefer non-generic titles
-        let finalTitle = session.title;
-        if (!finalTitle || finalTitle === "New Conversation") {
-          finalTitle = cloudData.title || session.title;
-        } else if (cloudTime > localTime && cloudData.title && cloudData.title !== "New Conversation") {
-          finalTitle = cloudData.title;
-        }
-
-        const latestUpdated = new Date(Math.max(cloudTime, localTime, Date.now())).toISOString();
-
-        mergedSession = {
-          id: session.id,
-          title: finalTitle,
-          timestamp: cloudData.timestamp || session.timestamp || nowIso,
-          updatedAt: latestUpdated,
-          messages: mergedMsgs,
-          mode: session.mode || cloudData.mode || "normal",
-          userId: userId,
-          lastSyncedAt: nowIso
-        };
-      }
-    } catch (readErr) {
-      console.warn("Could not read existing cloud doc prior to save, proceeding with optimistic save:", readErr);
-    }
-
-    const payload = sanitizeForFirestore({
-      id: mergedSession.id,
-      title: mergedSession.title || "New Conversation",
-      timestamp: mergedSession.timestamp || nowIso,
-      updatedAt: mergedSession.updatedAt || nowIso,
-      messages: mergedSession.messages || [],
-      mode: mergedSession.mode || "normal",
-      userId: userId,
-      lastSyncedAt: nowIso
+    const response = await fetch("/api/history/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, session }),
     });
-
-    await setDoc(docRef, payload, { merge: true });
+    if (!response.ok) throw new Error("Conversation storage request failed.");
     removeFromSyncQueue(userId, session.id);
     return true;
   } catch (err) {
-    const formattedError = handleFirestoreError(err, OperationType.WRITE, docPath);
-    console.error("Failed to save conversation to cloud:", formattedError);
+    console.error("Failed to save conversation to Supabase:", err);
     if (enqueueOnFailure) {
       enqueueSyncOperation(userId, "upsert", session.id, session);
     }
@@ -403,7 +353,7 @@ export const saveConversationToCloud = async (
 };
 
 /**
- * Delete a single conversation from Firestore
+ * Delete a single conversation through the server-side Supabase store.
  */
 export const deleteConversationFromCloud = async (
   userIdRaw: { id?: string; email?: string } | null | string,
@@ -411,23 +361,22 @@ export const deleteConversationFromCloud = async (
   enqueueOnFailure: boolean = true
 ): Promise<boolean> => {
   const userId = getCleanUserId(userIdRaw);
-  const docPath = `users/${userId}/conversations/${conversationId}`;
-
   try {
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       if (enqueueOnFailure) enqueueSyncOperation(userId, "delete", conversationId);
       return false;
     }
 
-    await ensureFirebaseAuth();
-
-    const docRef = doc(db, "users", userId, "conversations", conversationId);
-    await deleteDoc(docRef);
+    const response = await fetch("/api/history/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, sessionId: conversationId }),
+    });
+    if (!response.ok && response.status !== 404) throw new Error("Conversation delete request failed.");
     removeFromSyncQueue(userId, conversationId);
     return true;
   } catch (err) {
-    const formattedError = handleFirestoreError(err, OperationType.DELETE, docPath);
-    console.error("Failed to delete conversation from cloud:", formattedError);
+    console.error("Failed to delete conversation from Supabase:", err);
     if (enqueueOnFailure) {
       enqueueSyncOperation(userId, "delete", conversationId);
     }
@@ -436,7 +385,7 @@ export const deleteConversationFromCloud = async (
 };
 
 /**
- * Real-time listener for user conversations
+ * Load conversations from the server-side Supabase store.
  */
 export const subscribeToUserConversations = (
   userIdRaw: { id?: string; email?: string } | null | string,
@@ -444,86 +393,33 @@ export const subscribeToUserConversations = (
   onError?: (err: Error) => void
 ): (() => void) => {
   const userId = getCleanUserId(userIdRaw);
-  const colPath = `users/${userId}/conversations`;
-  let unsub: (() => void) | null = null;
+  const controller = new AbortController();
   let isCancelled = false;
 
-  ensureFirebaseAuth().then(() => {
-    if (isCancelled) return;
-    const conversationsRef = collection(db, "users", userId, "conversations");
-    const q = query(conversationsRef, orderBy("updatedAt", "desc"));
-
-    unsub = onSnapshot(
-      q,
-      (snapshot) => {
-        const cloudSessionsMap = new Map<string, SyncChatSession>();
-
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          cloudSessionsMap.set(docSnap.id, {
-            id: docSnap.id,
-            title: data.title || "New Conversation",
-            timestamp: data.timestamp || new Date().toISOString(),
-            updatedAt: data.updatedAt || data.timestamp || new Date().toISOString(),
-            messages: Array.isArray(data.messages) ? data.messages : [],
-            mode: data.mode || "normal",
-            userId: data.userId || userId
-          });
-        });
-
-        // Overlay pending local queue for offline optimistic responsiveness
-        const pendingQueue = getPendingSyncQueue(userId);
-
-        for (const queuedItem of pendingQueue) {
-          if (queuedItem.type === "delete") {
-            cloudSessionsMap.delete(queuedItem.id);
-          } else if (queuedItem.type === "upsert" && queuedItem.session) {
-            const existing = cloudSessionsMap.get(queuedItem.id);
-            if (existing) {
-              const mergedMsgs = mergeSyncMessages(queuedItem.session.messages || [], existing.messages || []);
-              cloudSessionsMap.set(queuedItem.id, {
-                ...existing,
-                ...queuedItem.session,
-                messages: mergedMsgs,
-                updatedAt: new Date(Math.max(
-                  new Date(existing.updatedAt || 0).getTime(),
-                  new Date(queuedItem.session.updatedAt || 0).getTime()
-                )).toISOString()
-              });
-            } else {
-              cloudSessionsMap.set(queuedItem.id, queuedItem.session);
-            }
-          }
-        }
-
-        const finalSessions = Array.from(cloudSessionsMap.values());
-        finalSessions.sort((a, b) => new Date(b.updatedAt || b.timestamp || 0).getTime() - new Date(a.updatedAt || a.timestamp || 0).getTime());
-
-        onUpdate(finalSessions);
-      },
-      (err) => {
-        // Code 1 (CANCELLED) / idle stream disconnect is standard Firestore stream cycling behavior
-        const isIdleDisconnect = (err as any)?.code === 'cancelled' || (err as any)?.code === 1 || err?.message?.includes("Disconnecting idle stream");
-        if (isIdleDisconnect) {
-          // Stream will reconnect automatically on next target request
-          return;
-        }
-        const formattedErr = handleFirestoreError(err, OperationType.LIST, colPath);
-        console.warn("Firestore subscription notice:", formattedErr);
-        if (onError) onError(formattedErr);
+  fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId }),
+    signal: controller.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Conversation history request failed.");
+      return response.json();
+    })
+    .then((data) => {
+      if (!isCancelled && data.success && Array.isArray(data.sessions)) {
+        onUpdate(data.sessions as SyncChatSession[]);
       }
-    );
-  }).catch((err) => {
-    const formattedErr = handleFirestoreError(err, OperationType.GET, colPath);
-    console.error("Error setting up Firebase Auth:", formattedErr);
-    if (onError) onError(formattedErr);
-  });
+    })
+    .catch((err) => {
+      if (!isCancelled && err?.name !== "AbortError" && onError) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
 
   return () => {
     isCancelled = true;
-    if (unsub) {
-      unsub();
-    }
+    controller.abort();
   };
 };
 
@@ -537,8 +433,6 @@ export const syncAllLocalSessionsToCloud = async (
   if (!sessions || sessions.length === 0) return true;
   try {
     const userId = getCleanUserId(userIdRaw);
-    await ensureFirebaseAuth();
-
     for (const session of sessions) {
       if (session && session.id) {
         await saveConversationToCloud(userId, session);

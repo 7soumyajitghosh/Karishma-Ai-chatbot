@@ -31,6 +31,7 @@ import {
   isPuterAvailable,
   diagnoseWithClaudePuter,
 } from "./server/selfRepairEngine";
+import { deleteConversation, getConversationHistory, saveConversation } from "./server/supabaseHistory";
 
 dotenv.config();
 
@@ -1446,48 +1447,11 @@ app.post("/api/history", async (req, res) => {
     if (!userId) return res.status(400).json({ error: "Unauthorized" });
     const user = await findUserById(userId);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
-    
-    // Find all sessions for this user
-    const userSessions = Array.from(sessionsDb.values()).filter(s => s.userId === userId);
-    let dbUpdated = false;
-
-    // Construct response with messages
-    const result = userSessions.map(session => {
-      let msgIds = sessionMessagesIdx.get(session.id);
-      let messages: any[] = [];
-      if (msgIds && msgIds.length > 0) {
-        messages = msgIds.map(id => messagesDb.get(id)).filter(Boolean);
-      } else {
-        messages = Array.from(messagesDb.values()).filter(m => m.sessionId === session.id);
-      }
-
-      // Automatically rename generic "New Conversation" titles using first user message if available
-      let title = session.title;
-      const firstUserMsg = messages.find((m: any) => m.role === "user")?.text;
-      if ((!title || title === "New Conversation" || title.trim() === "") && firstUserMsg) {
-        const cleanMsg = firstUserMsg.trim();
-        title = cleanMsg.slice(0, 40) + (cleanMsg.length > 40 ? "..." : "");
-        session.title = title;
-        sessionsDb.set(session.id, session);
-        dbUpdated = true;
-      }
-
-      return {
-        ...session,
-        title,
-        messages
-      };
-    });
-
-    if (dbUpdated) {
-      saveDb();
-    }
-
-    result.sort((a: any, b: any) => new Date(b.updatedAt || b.timestamp).getTime() - new Date(a.updatedAt || a.timestamp).getTime());
-    
-    res.json({ success: true, sessions: result });
+    const sessions = await getConversationHistory(userId);
+    res.json({ success: true, sessions });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error("Supabase history fetch failed:", sanitizeSecrets(err?.message || String(err)));
+    res.status(503).json({ error: "Conversation storage is temporarily unavailable." });
   }
 });
 
@@ -1504,74 +1468,14 @@ app.post("/api/history/save", async (req, res) => {
     if (sessionsToSave.length === 0) return res.status(400).json({ error: "No session data provided" });
 
     for (const s of sessionsToSave) {
-      if (!s || !s.id) continue;
-
-      // Enforce ownership
-      const existingSession = sessionsDb.get(s.id);
-      if (existingSession && existingSession.userId !== userId) {
-        continue;
-      }
-
-      const updatedAt = new Date().toISOString();
-
-      // Extract first user message for title if title is missing or generic "New Conversation"
-      const messagesToSave = s.messages || [];
-      const firstUserMsg = messagesToSave.find((m: any) => m && m.role === "user")?.text;
-      let title = s.title;
-      if (!title || title === "New Conversation" || title.trim() === "") {
-        if (firstUserMsg) {
-          const cleanMsg = firstUserMsg.trim();
-          title = cleanMsg.slice(0, 40) + (cleanMsg.length > 40 ? "..." : "");
-        } else if (existingSession?.title && existingSession.title !== "New Conversation") {
-          title = existingSession.title;
-        } else {
-          title = "Chat";
-        }
-      }
-
-      sessionsDb.set(s.id, {
-        id: s.id,
-        userId,
-        title,
-        timestamp: s.timestamp || existingSession?.timestamp || updatedAt,
-        mode: s.mode || existingSession?.mode || 'default',
-        updatedAt
-      });
-
-      // Merge messages safely without overwriting newer/existing messages
-      const existingMsgIds = sessionMessagesIdx.get(s.id) || [];
-      const msgIdsSet = new Set<string>(existingMsgIds);
-      const msgIdsList: string[] = [...existingMsgIds];
-
-      for (const msg of messagesToSave) {
-        if (!msg || !msg.text) continue;
-        const msgId = msg.id || crypto.randomUUID();
-
-        if (!msgIdsSet.has(msgId)) {
-          msgIdsSet.add(msgId);
-          msgIdsList.push(msgId);
-        }
-
-        const existingMsg = messagesDb.get(msgId);
-        messagesDb.set(msgId, {
-          id: msgId,
-          sessionId: s.id,
-          role: msg.role,
-          text: msg.text,
-          timestamp: msg.timestamp || existingMsg?.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          isEncrypted: msg.isEncrypted ?? existingMsg?.isEncrypted ?? false,
-          citations: msg.citations || existingMsg?.citations
-        });
-      }
-
-      sessionMessagesIdx.set(s.id, msgIdsList);
+      if (s?.id) await saveConversation(userId, { ...s, userId });
     }
-
-    saveDb();
 
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const message = sanitizeSecrets(err?.message || String(err));
+    console.error("Supabase history save failed:", message);
+    res.status(message.includes("Forbidden") ? 403 : 503).json({ error: message.includes("Forbidden") ? "Forbidden: Not your session" : "Conversation storage is temporarily unavailable." });
   }
 });
 
@@ -1583,22 +1487,13 @@ app.post("/api/history/delete", async (req, res) => {
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     if (!sessionId) return res.status(400).json({ error: "Invalid data" });
     
-    const existingSession = sessionsDb.get(sessionId);
-    if (!existingSession) return res.status(404).json({ error: "Not found" });
-    if (existingSession.userId !== userId) {
-      return res.status(403).json({ error: "Forbidden: Not your session" });
-    }
-
-    sessionsDb.delete(sessionId); saveDb();
-    const msgIds = sessionMessagesIdx.get(sessionId) || [];
-    for (const id of msgIds) {
-      messagesDb.delete(id); saveDb();
-    }
-    sessionMessagesIdx.delete(sessionId);
+    const deleted = await deleteConversation(userId, sessionId);
+    if (!deleted) return res.status(404).json({ error: "Not found" });
     
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error("Supabase history delete failed:", sanitizeSecrets(err?.message || String(err)));
+    res.status(503).json({ error: "Conversation storage is temporarily unavailable." });
   }
 });
 

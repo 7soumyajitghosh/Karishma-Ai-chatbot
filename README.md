@@ -232,6 +232,23 @@ Example:
 VITE_API_BASE=https://YOUR-CLOUD-RUN-URL
 ```
 
+### Supabase conversation storage
+
+Run [supabase/migrations/202608310001_create_chat_history.sql](supabase/migrations/202608310001_create_chat_history.sql)
+in the Supabase SQL Editor before deploying. It creates the `conversations` and
+`messages` tables used by the existing `/api/history` endpoints.
+
+For Render, open **Service → Environment** and add these server-side variables:
+
+``` env
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+```
+
+`SUPABASE_SERVICE_ROLE_KEY` must never be set as a `VITE_*` variable or added
+to an Android/client environment file. Render injects environment variables at
+container runtime; no Dockerfile secret or build argument is required.
+
 ## 🛠️ Troubleshooting
 
 ### Android app cannot connect to the backend
