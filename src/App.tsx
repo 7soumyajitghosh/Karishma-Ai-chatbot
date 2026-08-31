@@ -53,7 +53,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { selfHealingSystem } from "./lib/selfHealing";
+import { selfHealingSystem, getCustomApiHeaders } from "./lib/selfHealing";
 import { SelfHealingStatusModal } from "./components/SelfHealingStatusModal";
 import {
   subscribeToUserConversations,
@@ -341,6 +341,27 @@ function App() {
   // Privacy and retention state
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
+
+  // Custom API Keys State
+  const [customGeminiKey, setCustomGeminiKey] = useState<string>(() => localStorage.getItem("custom_gemini_api_key") || "");
+  const [customOpenRouterKey, setCustomOpenRouterKey] = useState<string>(() => localStorage.getItem("custom_openrouter_api_key") || "");
+  const [apiKeySaveStatus, setApiKeySaveStatus] = useState<string | null>(null);
+
+  const handleSaveApiKeys = () => {
+    localStorage.setItem("custom_gemini_api_key", customGeminiKey.trim());
+    localStorage.setItem("custom_openrouter_api_key", customOpenRouterKey.trim());
+    setApiKeySaveStatus("API Keys saved successfully!");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
+  };
+
+  const handleClearApiKeys = () => {
+    setCustomGeminiKey("");
+    setCustomOpenRouterKey("");
+    localStorage.removeItem("custom_gemini_api_key");
+    localStorage.removeItem("custom_openrouter_api_key");
+    setApiKeySaveStatus("Custom API Keys cleared.");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
+  };
 
   // UI States
   const [showKeyEditor, setShowKeyEditor] = useState(false);
@@ -1919,7 +1940,10 @@ function App() {
     try {
       const res = await fetch("/api/transform-illustration", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...getCustomApiHeaders(),
+        },
         body: JSON.stringify({
           imageBase64: selectedAttachment.dataUrl,
           mimeType: selectedAttachment.type || "image/jpeg",
@@ -4603,6 +4627,82 @@ function App() {
               
               <div className="flex-1 overflow-y-auto p-5 space-y-8">
                 
+                {/* CATEGORY: AI Provider API Keys */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-bold text-[#8C857E] uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <Key className="w-3.5 h-3.5 text-[#D96B43]" />
+                    AI Provider API Keys
+                  </h3>
+                  
+                  <div className="bg-white border border-[#EBE6DD] rounded-2xl p-4 shadow-sm space-y-4">
+                    <p className="text-xs text-[#8C857E] leading-relaxed">
+                      Configure your own custom API key below. Keys are saved locally in your browser and used for your requests.
+                    </p>
+
+                    {/* Google Gemini API Key Input */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-[#2C2A29]">
+                          Google Gemini API Key
+                        </label>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${customGeminiKey ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-gray-100 text-gray-500"}`}>
+                          {customGeminiKey ? "Custom Active" : "Server Env Key"}
+                        </span>
+                      </div>
+                      <input
+                        type="password"
+                        placeholder="AIzaSy..."
+                        value={customGeminiKey}
+                        onChange={(e) => setCustomGeminiKey(e.target.value)}
+                        className="w-full text-xs p-2.5 rounded-xl border border-[#EBE6DD] bg-[#FAF8F5] focus:bg-white focus:outline-none focus:border-[#D96B43] text-[#2C2A29] transition-all font-mono"
+                      />
+                    </div>
+
+                    {/* OpenRouter API Key Input */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-[#2C2A29]">
+                          OpenRouter API Key
+                        </label>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${customOpenRouterKey ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-gray-100 text-gray-500"}`}>
+                          {customOpenRouterKey ? "Custom Active" : "Server Env Key"}
+                        </span>
+                      </div>
+                      <input
+                        type="password"
+                        placeholder="sk-or-v1-..."
+                        value={customOpenRouterKey}
+                        onChange={(e) => setCustomOpenRouterKey(e.target.value)}
+                        className="w-full text-xs p-2.5 rounded-xl border border-[#EBE6DD] bg-[#FAF8F5] focus:bg-white focus:outline-none focus:border-[#D96B43] text-[#2C2A29] transition-all font-mono"
+                      />
+                    </div>
+
+                    {apiKeySaveStatus && (
+                      <p className="text-xs text-emerald-600 font-semibold text-center flex items-center justify-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> {apiKeySaveStatus}
+                      </p>
+                    )}
+
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={handleSaveApiKeys}
+                        className="flex-1 bg-[#D96B43] hover:bg-[#c05933] text-white text-xs font-bold py-2.5 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Save Keys
+                      </button>
+                      {(customGeminiKey || customOpenRouterKey) && (
+                        <button
+                          onClick={handleClearApiKeys}
+                          className="bg-white border border-[#EBE6DD] hover:bg-rose-50 hover:border-rose-200 text-rose-600 text-xs font-bold py-2.5 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {/* CATEGORY: Appearance */}
                 <div className="space-y-4">
                   <h3 className="text-xs font-bold text-[#8C857E] uppercase tracking-wider mb-2 flex items-center gap-2">

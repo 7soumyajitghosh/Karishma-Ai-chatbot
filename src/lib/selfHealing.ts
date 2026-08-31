@@ -19,6 +19,17 @@ export interface ErrorLogEntry {
   verified?: boolean;
 }
 
+export function getCustomApiHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined" && window.localStorage) {
+    const geminiKey = localStorage.getItem("custom_gemini_api_key") || "";
+    const openRouterKey = localStorage.getItem("custom_openrouter_api_key") || "";
+    if (geminiKey.trim()) headers["x-gemini-api-key"] = geminiKey.trim();
+    if (openRouterKey.trim()) headers["x-openrouter-api-key"] = openRouterKey.trim();
+  }
+  return headers;
+}
+
 type SelfHealingListener = (log: ErrorLogEntry[]) => void;
 
 class SelfHealingSystemManager {
@@ -176,7 +187,10 @@ class SelfHealingSystemManager {
       try {
         const response = await fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...getCustomApiHeaders(),
+          },
           body: JSON.stringify({
             messages: messagesPayload,
             model: currentModelToTry,
@@ -300,7 +314,10 @@ class SelfHealingSystemManager {
     try {
       const response = await fetch("/api/generate-image", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...getCustomApiHeaders(),
+        },
         body: JSON.stringify({ prompt }),
       });
 

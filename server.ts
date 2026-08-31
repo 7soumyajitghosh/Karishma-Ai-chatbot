@@ -69,6 +69,64 @@ if (rawGeminiKey && !rawGeminiKey.startsWith("sk-or")) {
   }
 }
 
+// Helper to resolve API keys dynamically from request headers, request body, or environment variables
+function resolveApiKeys(reqHeaders?: Record<string, any>, reqBody?: Record<string, any>) {
+  let geminiKey = (
+    reqHeaders?.["x-gemini-api-key"] ||
+    reqBody?.customGeminiKey ||
+    process.env.GEMINI_API_KEY ||
+    ""
+  ).toString().trim();
+
+  let openRouterKey = (
+    reqHeaders?.["x-openrouter-api-key"] ||
+    reqBody?.customOpenRouterKey ||
+    process.env.OPENROUTER_API_KEY ||
+    ""
+  ).toString().trim();
+
+  // Smart auto-routing: If key format is swapped, fix automatically
+  if (geminiKey.startsWith("sk-or") && !openRouterKey) {
+    openRouterKey = geminiKey;
+    geminiKey = "";
+  } else if ((openRouterKey.startsWith("AIza") || openRouterKey.startsWith("aiza")) && !geminiKey) {
+    geminiKey = openRouterKey;
+    openRouterKey = "";
+  }
+
+  let clientGemini: GoogleGenAI | null = null;
+  if (geminiKey && !geminiKey.startsWith("sk-or")) {
+    try {
+      clientGemini = new GoogleGenAI({ apiKey: geminiKey });
+    } catch (clientInitErr) {
+      console.warn("Failed to initialize custom GoogleGenAI client:", clientInitErr);
+    }
+  }
+
+  let clientOpenRouter: OpenAI | null = null;
+  if (openRouterKey) {
+    try {
+      clientOpenRouter = new OpenAI({
+        apiKey: openRouterKey,
+        baseURL: "https://openrouter.ai/api/v1",
+        defaultHeaders: {
+          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+          "X-Title": "Karishma AI Friend",
+        },
+      });
+    } catch (clientInitErr) {
+      console.warn("Failed to initialize custom OpenAI client:", clientInitErr);
+    }
+  }
+
+  return {
+    geminiKey,
+    openRouterKey,
+    clientGemini: clientGemini || googleGenAIClient,
+    clientOpenRouter: clientOpenRouter || ai,
+  };
+}
+
 // Security Helper: Mask API keys and sensitive credentials in error logs and response strings
 function sanitizeSecrets(text: string): string {
   if (!text || typeof text !== "string") return text || "";
@@ -76,6 +134,8 @@ function sanitizeSecrets(text: string): string {
   const sensitiveKeys = [
     process.env.GEMINI_API_KEY,
     process.env.OPENROUTER_API_KEY,
+    process.env.POLLINATIONS_API_KEY,
+    process.env.POLLINATIONS_KEY,
     process.env.FIREBASE_PRIVATE_KEY,
   ].filter((k): k is string => Boolean(k && k.length > 5));
 
@@ -84,6 +144,7 @@ function sanitizeSecrets(text: string): string {
   }
   sanitized = sanitized.replace(/bearer\s+[a-zA-Z0-9_\-\.]{10,}/gi, "Bearer [REDACTED]");
   sanitized = sanitized.replace(/(sk-[a-zA-Z0-9_\-]{10,})/gi, "[REDACTED_KEY]");
+  sanitized = sanitized.replace(/(pk-[a-zA-Z0-9_\-]{10,})/gi, "[REDACTED_KEY]");
   return sanitized;
 }
 
@@ -124,11 +185,10 @@ async function retryApiCall<T>(
       const status = err?.status || err?.statusCode || err?.response?.status;
       const rawMsg = err?.message || String(err);
       const msg = sanitizeSecrets(rawMsg).toLowerCase();
-      console.log(`[DEBUG] Raw retry error for ${actionName}:`, rawMsg, "status:", status);
 
       // Check for non-retryable errors (Auth failure, payment/credits required, bad client request, model not found, daily quota exhaustion)
       const isAuthError = status === 401 || status === 403 || msg.includes("api key") || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("invalid key");
-      const isPaymentError = status === 402 || msg.includes("402") || msg.includes("insufficient credits") || msg.includes("never purchased credits") || msg.includes("payment required");
+      const isPaymentError = status === 402 || msg.includes("402") || msg.includes("insufficient credits") || msg.includes("never purchased credits") || msg.includes("payment required") || msg.includes("budget too low");
       const isBadRequest = status === 400 || msg.includes("invalid_argument") || msg.includes("bad request");
       const isNotFound = status === 404 || msg.includes("model not found") || msg.includes("does not exist");
       const isDailyQuotaExhausted = (status === 429 || msg.includes("429") || msg.includes("resource_exhausted")) && (msg.includes("quota exceeded") || msg.includes("plan and billing") || msg.includes("free_tier_requests") || msg.includes("quotafailure"));
@@ -138,7 +198,7 @@ async function retryApiCall<T>(
         throw new Error(`Authentication failure with AI provider (${status || '401/403'}).`);
       }
       if (isPaymentError) {
-        console.warn(`[${actionName}] OpenRouter insufficient credits (402). Non-retryable.`);
+        console.warn(`[${actionName}] AI provider insufficient credits/zero budget (402). Non-retryable.`);
         throw new Error(`Insufficient credits on AI provider (402).`);
       }
       if (isDailyQuotaExhausted) {
@@ -168,9 +228,15 @@ async function retryApiCall<T>(
 }
 
 // Image generation and transformation helper using Gemini models with Fallback
-async function generateImageWithGemini(prompt: string, inputImageBase64?: string, inputImageMime?: string): Promise<string | null> {
+async function generateImageWithGemini(
+  prompt: string,
+  inputImageBase64?: string,
+  inputImageMime?: string,
+  clientOverride?: GoogleGenAI | null
+): Promise<string | null> {
+  const client = clientOverride || googleGenAIClient;
   // 1. Try Gemini Image Generation & Editing Models with direct multimodal visual reference input
-  if (googleGenAIClient) {
+  if (client) {
     const imageModels = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
 
     for (const modelName of imageModels) {
@@ -201,7 +267,7 @@ async function generateImageWithGemini(prompt: string, inputImageBase64?: string
           };
         }
 
-        const response = await googleGenAIClient.models.generateContent({
+        const response = await client.models.generateContent({
           model: modelName,
           contents: {
             parts: parts
@@ -228,13 +294,23 @@ async function generateImageWithGemini(prompt: string, inputImageBase64?: string
   try {
     const cleanPrompt = encodeURIComponent(prompt.slice(0, 300));
     const seed = Math.floor(Math.random() * 1000000);
-    const polUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
+    const pollinationsApiKey = process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY;
+    const polUrl = pollinationsApiKey
+      ? `https://gen.pollinations.ai/image/${cleanPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&key=${pollinationsApiKey}`
+      : `https://image.pollinations.ai/prompt/${cleanPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
+
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    };
+    if (pollinationsApiKey) {
+      headers['Authorization'] = `Bearer ${pollinationsApiKey}`;
+    }
 
     const imageUrl = await retryApiCall(
       "Pollinations Image Generation",
       async (signal) => {
         const imgRes = await fetch(polUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          headers,
           signal,
         });
 
@@ -244,14 +320,21 @@ async function generateImageWithGemini(prompt: string, inputImageBase64?: string
           const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
           return `data:${contentType};base64,${base64}`;
         }
-        throw new Error(`Pollinations HTTP ${imgRes.status}`);
+        const err = new Error(`Pollinations HTTP ${imgRes.status}`);
+        (err as any).status = imgRes.status;
+        throw err;
       },
       { maxRetries: 1, initialDelayMs: 300, timeoutMs: 12000 }
     );
 
     return imageUrl;
   } catch (pollErr: any) {
-    console.error("Pollinations image generation fallback error:", sanitizeSecrets(pollErr?.message || String(pollErr)));
+    const msg = sanitizeSecrets(pollErr?.message || String(pollErr));
+    if (msg.includes("402") || msg.includes("401") || msg.includes("403")) {
+      console.warn("Pollinations Image Generation skipped (Auth/Credits required).");
+    } else {
+      console.error("Pollinations image generation fallback error:", msg);
+    }
   }
 
   return null;
@@ -290,51 +373,85 @@ function detectImagePrompt(text: string): string | null {
   return null;
 }
 
-// Pollinations Text AI fallback (Free, keyless AI completion engine)
+// Pollinations Text AI fallback (using enter.pollinations.ai / gen.pollinations.ai)
 export async function generateChatWithPollinations(
   systemInstruction: string,
   messages: any[]
 ): Promise<string | null> {
+  const pollinationsApiKey = process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY;
+
   try {
-    const conversationHistory = messages.slice(-8).map((m: any) => {
-      let content = m.text || "";
-      if (typeof m.content === "string") content = m.content;
-      return `${m.role === "user" ? "User" : "Karishma"}: ${content}`;
-    }).join("\n");
-
-    const flattenedPrompt = `${systemInstruction}\n\nHere is the recent conversation:\n${conversationHistory}\n\nKarishma:`;
-
     const formattedMsgs = [
-      { role: "user", content: flattenedPrompt }
+      ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+      ...messages.slice(-8).map((m: any) => {
+        let content = m.text || "";
+        if (typeof m.content === "string") content = m.content;
+        return {
+          role: m.role === "user" ? "user" : "assistant",
+          content: content || "Hello",
+        };
+      })
     ];
 
     const resultText = await retryApiCall(
       "Pollinations Chat Fallback",
       async (signal) => {
-        const encodedPrompt = encodeURIComponent(flattenedPrompt);
-        const res = await fetch(`https://text.pollinations.ai/${encodedPrompt}`, {
-          method: "GET",
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          },
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        };
+
+        if (pollinationsApiKey) {
+          headers["Authorization"] = `Bearer ${pollinationsApiKey}`;
+        }
+
+        // Use official unified OpenAI-compatible endpoint at gen.pollinations.ai
+        const endpoint = "https://gen.pollinations.ai/v1/chat/completions";
+
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: "openai",
+            messages: formattedMsgs,
+            temperature: 0.7,
+          }),
           signal,
         });
 
         if (res.ok) {
-          const text = await res.text();
-          if (text && text.trim().length > 0) {
-            return text.trim();
+          const rawText = await res.text();
+          try {
+            const data = JSON.parse(rawText);
+            if (data?.choices?.[0]?.message?.content) {
+              return data.choices[0].message.content.trim();
+            }
+          } catch {
+            // Not JSON
+          }
+          if (rawText && rawText.trim().length > 0) {
+            return rawText.trim();
           }
         }
+
         const errBody = await res.text();
-        throw new Error(`Pollinations HTTP ${res.status} Body: ${errBody}`);
+        const err = new Error(`Pollinations HTTP ${res.status} Body: ${errBody}`);
+        (err as any).status = res.status;
+        throw err;
       },
       { maxRetries: 1, initialDelayMs: 400, timeoutMs: 10000 }
     );
 
     return resultText;
   } catch (err: any) {
-    console.error("Pollinations Chat Fallback Error:", sanitizeSecrets(err?.message || String(err)));
+    const errMsg = sanitizeSecrets(err?.message || String(err));
+    if (errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("budget too low")) {
+      console.warn("Pollinations Chat Fallback skipped: Zero pollen balance / payment required (402).");
+    } else if (errMsg.includes("401") || errMsg.includes("403") || errMsg.includes("Authentication failure")) {
+      console.warn("Pollinations Chat Fallback skipped: Authentication failure / missing API key (401/403).");
+    } else {
+      console.error("Pollinations Chat Fallback Error:", errMsg);
+    }
   }
   return null;
 }
@@ -344,9 +461,11 @@ async function generateChatWithGemini(
   systemInstruction: string,
   messages: any[],
   attachment?: any,
-  requestedModel?: string
+  requestedModel?: string,
+  clientOverride?: GoogleGenAI | null
 ): Promise<{ text?: string; error?: string }> {
-  if (!googleGenAIClient) return { error: "Gemini API client not configured or API key missing." };
+  const client = clientOverride || googleGenAIClient;
+  if (!client) return { error: "Gemini API client not configured or API key missing." };
 
   try {
     const formattedContents: any[] = [];
@@ -400,20 +519,18 @@ async function generateChatWithGemini(
       });
     });
 
-    const isSpecificGemini = requestedModel && requestedModel.includes("gemini");
+    const isSpecificGemini = Boolean(requestedModel && requestedModel.includes("gemini"));
+    const defaultModels = [
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-2.5-flash",
+      "gemini-1.5-pro",
+      "gemini-2.5-pro",
+    ];
+
     const textModelsToTry = isSpecificGemini
-      ? [requestedModel]
-      : [
-          "gemini-2.5-flash",
-          "gemini-2.0-flash",
-          "gemini-1.5-flash",
-          "gemini-2.5-pro",
-          "gemini-1.5-pro",
-          "gemini-3.5-flash",
-          "gemini-3.1-pro-preview",
-          "gemini-3-flash-preview",
-          "gemini-3.1-flash-lite",
-        ];
+      ? Array.from(new Set([requestedModel!, ...defaultModels]))
+      : defaultModels;
 
     let lastError: any = null;
 
@@ -422,7 +539,7 @@ async function generateChatWithGemini(
         const response = await retryApiCall(
           `Gemini Chat (${modelName})`,
           async () => {
-            return await googleGenAIClient!.models.generateContent({
+            return await client.models.generateContent({
               model: modelName,
               contents: formattedContents,
               config: {
@@ -442,11 +559,6 @@ async function generateChatWithGemini(
         const errStr = sanitizeSecrets(mErr?.message || String(mErr));
         lastError = errStr;
         console.warn(`Gemini Chat model ${modelName} call failed:`, errStr.slice(0, 160));
-        
-        // If a specific model was requested by the user, do NOT fallback silently to another model
-        if (isSpecificGemini) {
-          return { error: `Gemini model '${modelName}' is unavailable: ${errStr}` };
-        }
       }
     }
     
@@ -1055,7 +1167,7 @@ app.post("/api/auth/login", async (req, res) => {
 
 
 // Helper to convert raw 16-bit PCM buffer to WAV buffer
-function pcmToWav(pcmBuffer: Buffer | Uint8Array | null | undefined, sampleRate = 24000, numChannels = 1, bitDepth = 16): Buffer {
+function pcmToWav(pcmBuffer: Buffer | Uint8Array | null | undefined, sampleRate = 24000, numChannels = 1, bitDepth = 16): Buffer<any> {
   const buf = pcmBuffer ? (Buffer.isBuffer(pcmBuffer) ? pcmBuffer : Buffer.from(pcmBuffer as any)) : Buffer.alloc(0);
   const header = Buffer.alloc(44);
   const dataSize = buf.length;
@@ -1189,7 +1301,7 @@ app.post("/api/tts", async (req, res) => {
                 const base64Data = part.inlineData.data;
                 const audioBuffer = Buffer.from(base64Data, "base64");
 
-                let finalAudioBuffer = audioBuffer;
+                let finalAudioBuffer: Buffer<any> = audioBuffer;
                 let finalMimeType = mimeType;
 
                 if (mimeType.includes("pcm")) {
@@ -1641,13 +1753,17 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "Invalid messages array." });
     }
 
+    const activeKeys = resolveApiKeys(req.headers, req.body);
+    const activeGeminiClient = activeKeys.clientGemini;
+    const activeOpenRouterClient = activeKeys.clientOpenRouter;
+
     // Check if latest user message is an image generation request
     const latestUserMsg = messages[messages.length - 1]?.text || "";
     if (!attachment && latestUserMsg) {
       const detectedPrompt = detectImagePrompt(latestUserMsg);
       if (detectedPrompt) {
         console.log(`[Image Generation Request]: "${detectedPrompt}"`);
-        const generatedUrl = await generateImageWithGemini(detectedPrompt);
+        const generatedUrl = await generateImageWithGemini(detectedPrompt, undefined, undefined, activeGeminiClient);
         if (generatedUrl) {
           return res.json({
             text: `Here's what I created for you! 🎨\n\n![${detectedPrompt}](${generatedUrl})`,
@@ -1875,12 +1991,13 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     // Non-Gemini UI model selections use Gemini's configured default model list.
     const isGeminiRequested = Boolean(model && (model.startsWith("google/") || model.includes("gemini")));
 
-    if (googleGenAIClient) {
+    if (activeGeminiClient) {
       const geminiResult = await generateChatWithGemini(
         systemInstruction,
         messages,
         attachment,
-        isGeminiRequested ? model : undefined
+        isGeminiRequested ? model : undefined,
+        activeGeminiClient
       );
       if (geminiResult.text) {
         textResponse = geminiResult.text;
@@ -1892,7 +2009,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     }
 
     // 2. Fallback: OpenRouter API (if configured and Gemini produced no response)
-    if (!textResponse && ai) {
+    if (!textResponse && activeOpenRouterClient) {
       const isImage = attachment && attachment.dataUrl && (
         attachment.isImage || 
         (attachment.type && attachment.type.startsWith("image/")) || 
@@ -1917,7 +2034,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
           const response = await retryApiCall(
             `OpenRouter Chat (${targetModel})`,
             async () => {
-              return await ai!.chat.completions.create({
+              return await activeOpenRouterClient!.chat.completions.create({
                 model: targetModel,
                 messages: openAiMessages as any,
                 temperature: 0.85,
@@ -1965,7 +2082,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     }
 
     if (!textResponse) {
-      textResponse = "I'm sorry, but my AI providers (Gemini/OpenRouter) are not configured correctly or are out of credits. Please check the Render environment variables for GEMINI_API_KEY.";
+      textResponse = "I'm sorry, but AI providers (Gemini/OpenRouter) are not configured correctly or are out of credits. Please configure your API key in Settings or set GEMINI_API_KEY in your environment.";
     }
     
     return res.json({
@@ -1982,14 +2099,15 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
 // Dedicated Image Generation endpoint
 app.post("/api/generate-image", async (req, res) => {
   try {
+    const activeKeys = resolveApiKeys(req.headers, req.body);
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "Prompt string is required." });
     }
 
-    const imageUrl = await generateImageWithGemini(prompt.trim());
+    const imageUrl = await generateImageWithGemini(prompt.trim(), undefined, undefined, activeKeys.clientGemini);
     if (!imageUrl) {
-      return res.status(500).json({ error: "Failed to generate image. Please try again." });
+      return res.status(500).json({ error: "Failed to generate image. Please ensure a valid Gemini API key is configured in Settings or .env." });
     }
 
     return res.json({
@@ -2006,6 +2124,7 @@ app.post("/api/generate-image", async (req, res) => {
 // Dedicated Image-to-Illustration Transformation endpoint (Ghibli Art / Japanese Animated Film Style)
 app.post("/api/transform-illustration", async (req, res) => {
   try {
+    const activeKeys = resolveApiKeys(req.headers, req.body);
     const { imageBase64, mimeType, customPrompt } = req.body;
     if (!imageBase64 || typeof imageBase64 !== "string") {
       return res.status(400).json({ error: "Uploaded image data is required." });
@@ -2029,10 +2148,9 @@ The result must clearly depict the SAME SUBJECT and SAME SCENE as the provided r
 
     let generatedImageUrl: string | null = null;
 
-    // 1. Direct multimodal image-to-image with Gemini Image API (gemini-3.1-flash-image / gemini-3.1-flash-lite-image)
-    // The uploaded image is passed directly as inlineData visual reference without text-description recreation
-    if (googleGenAIClient) {
-      generatedImageUrl = await generateImageWithGemini(illustrationPrompt, imageBase64, mimeType || "image/jpeg");
+    // 1. Direct multimodal image-to-image with Gemini Image API
+    if (activeKeys.clientGemini) {
+      generatedImageUrl = await generateImageWithGemini(illustrationPrompt, imageBase64, mimeType || "image/jpeg", activeKeys.clientGemini);
     }
 
     if (!generatedImageUrl) {
