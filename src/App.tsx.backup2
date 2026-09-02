@@ -342,6 +342,25 @@ function App() {
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
 
+  // Custom API Keys State
+  const [customGeminiKey, setCustomGeminiKey] = useState<string>(() => localStorage.getItem("custom_gemini_api_key") || "");
+  const [customOpenRouterKey, setCustomOpenRouterKey] = useState<string>(() => localStorage.getItem("custom_openrouter_api_key") || "");
+  const [apiKeySaveStatus, setApiKeySaveStatus] = useState<string | null>(null);
+
+  const handleSaveApiKeys = () => {
+    localStorage.setItem("custom_gemini_api_key", customGeminiKey.trim());
+    localStorage.setItem("custom_openrouter_api_key", customOpenRouterKey.trim());
+    setApiKeySaveStatus("API Keys saved successfully!");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
+  };
+
+  const handleClearApiKeys = () => {
+    setCustomGeminiKey("");
+    setCustomOpenRouterKey("");
+    localStorage.removeItem("custom_gemini_api_key");
+    localStorage.removeItem("custom_openrouter_api_key");
+    setApiKeySaveStatus("Custom API Keys cleared.");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
   };
 
   // UI States
