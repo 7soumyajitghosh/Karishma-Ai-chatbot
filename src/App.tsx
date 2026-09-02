@@ -342,6 +342,27 @@ function App() {
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
 
+  // Custom API Keys State
+  const [customGeminiKey, setCustomGeminiKey] = useState<string>(() => localStorage.getItem("custom_gemini_api_key") || "");
+  const [customOpenRouterKey, setCustomOpenRouterKey] = useState<string>(() => localStorage.getItem("custom_openrouter_api_key") || "");
+  const [apiKeySaveStatus, setApiKeySaveStatus] = useState<string | null>(null);
+
+  const handleSaveApiKeys = () => {
+    localStorage.setItem("custom_gemini_api_key", customGeminiKey.trim());
+    localStorage.setItem("custom_openrouter_api_key", customOpenRouterKey.trim());
+    setApiKeySaveStatus("API Keys saved successfully!");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
+  };
+
+  const handleClearApiKeys = () => {
+    setCustomGeminiKey("");
+    setCustomOpenRouterKey("");
+    localStorage.removeItem("custom_gemini_api_key");
+    localStorage.removeItem("custom_openrouter_api_key");
+    setApiKeySaveStatus("Custom API Keys cleared.");
+    setTimeout(() => setApiKeySaveStatus(null), 3000);
+  };
+
   // UI States
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -893,8 +914,6 @@ function App() {
     setUserName("");
     setUserNickname("");
     setUserFullName("");
-    setOnboardingCompleted(false);
-    setOnboardingInput("");
     setEditFullName("");
     setEditNickname("");
     setProfileLoading(false);
@@ -943,11 +962,12 @@ function App() {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key) {
-          // Keep non-account UI preferences (theme, selected model, response mode)
+          // Keep non-account UI preferences & onboarding flag
           if (
             key === "best_friend_theme" ||
             key === "best_friend_selected_model" ||
-            key === "best_friend_response_mode"
+            key === "best_friend_response_mode" ||
+            key === "onboarding_completed"
           ) {
             continue;
           }
@@ -958,8 +978,7 @@ function App() {
             key.startsWith("memory_") ||
             key.startsWith("context_") ||
             key === "mock_logged_in_user" ||
-            key === "auth_step_completed" ||
-            key === "onboarding_completed"
+            key === "auth_step_completed"
           ) {
             keysToRemove.push(key);
           }
@@ -2257,11 +2276,30 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
-                  handleLogout();
+                  localStorage.removeItem("mock_logged_in_user");
+                  setLoggedInUser(null);
+
                   localStorage.setItem("best_friend_is_guest", "true");
                   localStorage.setItem("auth_step_completed", "true");
+                  localStorage.setItem("onboarding_completed", "true");
+
                   setIsGuest(true);
                   setAuthCompleted(true);
+                  setOnboardingCompleted(true);
+
+                  let name = userName || localStorage.getItem("best_friend_user_name") || localStorage.getItem("best_friend_nickname");
+                  if (!name || !name.trim()) {
+                    name = "Guest";
+                  }
+                  setUserName(name);
+                  setUserNickname(name);
+                  localStorage.setItem("best_friend_user_name", name);
+                  localStorage.setItem("best_friend_nickname", name);
+
+                  setChatHistoryList([]);
+                  setMessages([]);
+                  setCurrentChatId(crypto.randomUUID());
+                  setAuthError("");
                 }}
                 className="w-full p-4 bg-white hover:bg-[#FAF8F5] border border-[#DFD9D0] hover:border-[#8C857E] rounded-2xl transition-all cursor-pointer flex items-center gap-4 text-left group mt-1"
               >
