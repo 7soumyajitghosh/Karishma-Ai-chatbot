@@ -342,8 +342,6 @@ function App() {
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
 
-  };
-
   // UI States
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
