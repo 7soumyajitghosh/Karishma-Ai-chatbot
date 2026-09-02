@@ -24,6 +24,7 @@
     "@getbrevo/brevo": "^6.0.2",
     "@google/genai": "^2.4.0",
     "@heyputer/puter.js": "^2.6.1",
+    "@supabase/server": "^1.5.2",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.114.0",
     "@tailwindcss/vite": "^4.1.14",
