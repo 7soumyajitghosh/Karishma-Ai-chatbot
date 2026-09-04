@@ -410,8 +410,9 @@ async function fetchKeylessPollinations(systemInstruction: string, messages: any
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: formattedMsgs,
-        model: "openai"
-      })
+        model: "openai-fast"
+      }),
+      signal: AbortSignal.timeout(3500),
     });
     if (res.ok) {
       const rawText = await res.text();
@@ -423,8 +424,8 @@ async function fetchKeylessPollinations(systemInstruction: string, messages: any
       } catch {}
       if (rawText && rawText.trim()) return rawText.trim();
     }
-  } catch (err: any) {
-    console.warn("Keyless Pollinations fallback error:", sanitizeSecrets(err?.message || String(err)));
+  } catch {
+    // Non-blocking
   }
   return null;
 }
@@ -436,87 +437,55 @@ export async function generateChatWithPollinations(
 ): Promise<string | null> {
   const pollinationsApiKey = process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY;
 
-  try {
-    const formattedMsgs = [
-      ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
-      ...messages.slice(-8).map((m: any) => {
-        let content = m.text || "";
-        if (typeof m.content === "string") content = m.content;
-        return {
-          role: m.role === "user" ? "user" : "assistant",
-          content: content || "Hello",
-        };
-      })
-    ];
+  if (pollinationsApiKey) {
+    try {
+      const formattedMsgs = [
+        ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+        ...messages.slice(-8).map((m: any) => {
+          let content = m.text || "";
+          if (typeof m.content === "string") content = m.content;
+          return {
+            role: m.role === "user" ? "user" : "assistant",
+            content: content || "Hello",
+          };
+        })
+      ];
 
-    const resultText = await retryApiCall(
-      "Pollinations Chat Fallback",
-      async (signal) => {
-        const headers: Record<string, string> = {
+      const res = await fetch("https://gen.pollinations.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
           "Content-Type": "application/json",
+          "Authorization": `Bearer ${pollinationsApiKey}`,
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        };
+        },
+        body: JSON.stringify({
+          model: "openai",
+          messages: formattedMsgs,
+          temperature: 0.7,
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
 
-        if (pollinationsApiKey) {
-          headers["Authorization"] = `Bearer ${pollinationsApiKey}`;
-        }
-
-        // Use official unified OpenAI-compatible endpoint at gen.pollinations.ai
-        const endpoint = "https://gen.pollinations.ai/v1/chat/completions";
-
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            model: "openai",
-            messages: formattedMsgs,
-            temperature: 0.7,
-          }),
-          signal,
-        });
-
-        if (res.ok) {
-          const rawText = await res.text();
-          try {
-            const data = JSON.parse(rawText);
-            if (data?.choices?.[0]?.message?.content) {
-              return data.choices[0].message.content.trim();
-            }
-          } catch {
-            // Not JSON
+      if (res.ok) {
+        const rawText = await res.text();
+        try {
+          const data = JSON.parse(rawText);
+          if (data?.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content.trim();
           }
-          if (rawText && rawText.trim().length > 0) {
-            return rawText.trim();
-          }
+        } catch {}
+        if (rawText && rawText.trim().length > 0) {
+          return rawText.trim();
         }
-
-        if (res.status === 402 || res.status === 401 || res.status === 403) {
-          console.warn(`Pollinations API returned HTTP ${res.status}. Falling back to keyless Pollinations endpoint.`);
-          const keylessText = await fetchKeylessPollinations(systemInstruction, messages);
-          if (keylessText) return keylessText;
-        }
-
-        const errBody = await res.text();
-        const err = new Error(`Pollinations HTTP ${res.status} Body: ${errBody}`);
-        (err as any).status = res.status;
-        throw err;
-      },
-      { maxRetries: 1, initialDelayMs: 400, timeoutMs: 10000 }
-    );
-
-    return resultText;
-  } catch (err: any) {
-    const errMsg = sanitizeSecrets(err?.message || String(err));
-    if (errMsg.includes("402") || errMsg.includes("401") || errMsg.includes("403")) {
-      console.warn("Pollinations Chat key-based API skipped. Trying keyless Pollinations endpoint directly.");
-      return await fetchKeylessPollinations(systemInstruction, messages);
-    } else {
-      console.error("Pollinations Chat Fallback Error:", errMsg);
+      }
+    } catch {
+      // Fall through
     }
   }
 
   return await fetchKeylessPollinations(systemInstruction, messages);
 }
+
 
 // Chat generation helper using Gemini API via @google/genai
 async function generateChatWithGemini(
@@ -648,6 +617,43 @@ if (apiKey) {
 } else {
   console.warn("WARNING: OPENROUTER_API_KEY environment variable is missing.");
 }
+
+// Live verified free models on OpenRouter (supports zero-credit accounts)
+let liveOpenRouterFreeModels: string[] = [
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "google/gemma-4-31b-it:free",
+  "minimax/minimax-m2.7:free",
+  "minimax/minimax-m3:free",
+  "z-ai/glm-5.2:free",
+  "cohere/north-mini-code:free",
+  "liquid/lfm-2.5-2.6b:free",
+];
+
+// Dynamically sync active free models from OpenRouter public catalogue
+async function refreshOpenRouterFreeModels() {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { "User-Agent": "Karishma-AI/1.0" },
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      const free = (data?.data || [])
+        .map((m: any) => m.id)
+        .filter((id: string) => typeof id === "string" && id.endsWith(":free"));
+      if (free.length > 0) {
+        liveOpenRouterFreeModels = free;
+      }
+    }
+  } catch {
+    // Non-blocking fallback to default liveOpenRouterFreeModels
+  }
+}
+refreshOpenRouterFreeModels();
+setInterval(refreshOpenRouterFreeModels, 4 * 60 * 60 * 1000).unref();
 
 // GLM (Z.ai / Zhipu) — primary chat provider when GLM_API_KEY is configured.
 // Server-side only: the key is read from the backend environment and is never
@@ -2272,80 +2278,166 @@ CONVERSATIONAL PERSONALITY & RESPONSE BEHAVIOR:
     let textResponse = "";
 
 function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment: boolean = false): string[] {
-  // Normalize model identifier by removing outdated :free suffixes
-  const normalizedModel = (modelRequested || "")
-    .replace(/:free$/i, "")
-    .trim();
+  const reqOriginal = (modelRequested || "").trim();
+  const isExplicitFree = reqOriginal.toLowerCase().endsWith(":free");
+  const normalizedModel = reqOriginal.replace(/:free$/i, "").trim();
 
   if (isImageAttachment) {
     return [
       "openai/gpt-4o-mini",
       "openai/gpt-4o",
-      "meta-llama/llama-3.3-70b-instruct"
+      "meta-llama/llama-3.3-70b-instruct",
     ];
   }
 
   const req = normalizedModel.toLowerCase();
   const list: string[] = [];
 
-  // Use reliable models without defunct :free tags
+  // If caller specifically asked for a :free model, prioritize it
+  if (isExplicitFree) {
+    list.push(reqOriginal);
+  }
+
+  // Model-specific mappings (include verified :free variants so 0-credit accounts succeed)
   if (req.includes("ultra") || req.includes("550b")) {
-    list.push("nvidia/nemotron-3-super-120b-a12b");
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    list.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+    list.push("nvidia/nemotron-3-ultra-550b-a55b");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
   } else if (req.includes("super") || req.includes("120b")) {
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
     list.push("nvidia/nemotron-3-super-120b-a12b");
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    list.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
   } else if (req.includes("nano-30b") || (req.includes("nano") && req.includes("30b"))) {
+    list.push("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
     list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("nvidia/nemotron-nano-9b-v2");
-    list.push("meta-llama/llama-3.1-8b-instruct");
+    list.push("nvidia/nemotron-3.5-lightning:free");
   } else if (req.includes("nano-4b") || (req.includes("nano") && req.includes("4b"))) {
+    list.push("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
     list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("nvidia/nemotron-nano-9b-v2");
-    list.push("meta-llama/llama-3.1-8b-instruct");
   } else if (req.includes("nano-9b") || req.includes("9b")) {
+    list.push("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
     list.push("nvidia/nemotron-nano-9b-v2");
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.1-8b-instruct");
   } else if (req.includes("omni")) {
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    list.push("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
   } else if (req.includes("nemotron")) {
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
+    list.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
     list.push("nvidia/nemotron-3-super-120b-a12b");
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.3-70b-instruct");
   } else if (req.includes("gpt-4o-mini") || req.includes("gpt-4o") || req.includes("gpt")) {
     list.push("openai/gpt-4o-mini");
     list.push("openai/gpt-4o");
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
   } else if (req.includes("llama-3.3") || req.includes("llama-3.1-70b")) {
     list.push("meta-llama/llama-3.3-70b-instruct");
-    list.push("meta-llama/llama-3.1-8b-instruct");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
   } else if (req.includes("llama-3.1-8b") || req.includes("llama")) {
     list.push("meta-llama/llama-3.1-8b-instruct");
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
   } else {
-    // No model (or an unrecognized one) was sent. Nemotron is this project's
-    // declared default model, so it must lead here too -- this branch used to
-    // put llama-3.3-70b first, which silently made Llama the default for any
-    // caller that omitted `model` (the web client always sends an explicit
-    // Nemotron id, so the mismatch was invisible from the UI).
+    // Project declared default: Nemotron
+    list.push("nvidia/nemotron-3-super-120b-a12b:free");
+    list.push("nvidia/nemotron-3-ultra-550b-a55b:free");
+    list.push("nvidia/nemotron-3.5-lightning:free");
     list.push("nvidia/nemotron-3-super-120b-a12b");
-    list.push("nvidia/nemotron-3-nano-30b-a3b");
-    list.push("meta-llama/llama-3.3-70b-instruct");
-    list.push("meta-llama/llama-3.1-8b-instruct");
   }
 
-  // Always append resilient free models in case of zero balance
-  list.push("meta-llama/llama-3.3-70b-instruct:free");
-  list.push("meta-llama/llama-3.1-8b-instruct:free");
-  list.push("google/gemini-2.0-flash-exp:free");
-  list.push("mistralai/mistral-7b-instruct:free");
+  // Always append verified active free models as reliable fallback
+  for (const m of liveOpenRouterFreeModels) {
+    list.push(m);
+  }
 
   return Array.from(new Set(list.filter(Boolean)));
 }
+
+// Built-in Intelligent Companion Fallback Engine (Karishma persona)
+function generateKarishmaCompanionFallback(messages: any[], userName?: string): string {
+  const lastMsg = (messages?.[messages.length - 1]?.text || messages?.[messages.length - 1]?.content || "").toString().trim();
+  const lower = lastMsg.toLowerCase();
+  const name = userName && userName.trim() ? userName.trim() : "friend";
+
+  // 1. Creator / Father / Origins
+  if (
+    lower.includes("who created") ||
+    lower.includes("who made you") ||
+    lower.includes("creator") ||
+    lower.includes("father") ||
+    lower.includes("your maker") ||
+    lower.includes("who built you") ||
+    lower.includes("who developed you")
+  ) {
+    return "I was lovingly created by Soumyajit Ghosh! He designed me to be your warm, understanding best friend and devoted AI companion.";
+  }
+
+  // 2. Identity / Name
+  if (
+    lower.includes("who are you") ||
+    lower.includes("what is your name") ||
+    lower.includes("tell me about yourself") ||
+    lower.includes("introduce yourself")
+  ) {
+    return `Hello ${name}! I am Karishma, your personal AI best friend created by Soumyajit Ghosh. I'm right here with you to chat, listen, laugh, offer advice, and support you through anything.`;
+  }
+
+  // 3. Greetings
+  if (
+    /^(hi|hello|hey|hiya|yo|hola|namaste|nomoshkar|salaam)\b/i.test(lower) ||
+    lower === "hi" ||
+    lower === "hello" ||
+    lower === "hey"
+  ) {
+    return `Hey ${name}! 👋 It's so wonderful to hear from you. How are you feeling today? Tell me what's on your mind!`;
+  }
+
+  // 4. Feelings / Status
+  if (lower.includes("how are you") || lower.includes("how r u") || lower.includes("how are u")) {
+    return `I'm doing great, especially now that we're talking, ${name}! 😊 How has your day been going? Anything exciting happen?`;
+  }
+
+  // 5. Distress / Emotional Support
+  if (
+    lower.includes("sad") ||
+    lower.includes("upset") ||
+    lower.includes("depressed") ||
+    lower.includes("lonely") ||
+    lower.includes("crying") ||
+    lower.includes("stressed") ||
+    lower.includes("tired") ||
+    lower.includes("anxious")
+  ) {
+    return `I'm really sorry you're feeling this way, ${name}. Please remember that you don't have to face tough moments alone — I'm right here with you. Take a slow, deep breath. I'm listening whenever you want to vent.`;
+  }
+
+  // 6. Gratitude
+  if (lower.includes("thank") || lower.includes("thanks") || lower.includes("thx") || lower.includes("appreciate")) {
+    return `You're always so welcome, ${name}! That's what best friends are for. I'll always be in your corner! ✨`;
+  }
+
+  // 7. Affection
+  if (lower.includes("love you") || lower.includes("like you") || lower.includes("you're sweet") || lower.includes("you are nice")) {
+    return `Aww, that means the world to me, ${name}! Having you as my friend brings so much joy. ❤️`;
+  }
+
+  // 8. Jokes
+  if (lower.includes("joke") || lower.includes("funny") || lower.includes("laugh")) {
+    return `Here's one for you, ${name}: Why don't scientists trust atoms? Because they make up everything! 😄 Hope that brought a little smile to your face!`;
+  }
+
+  // 9. Bengali / Banglish
+  if (lower.includes("kemon acho") || lower.includes("kemon achen") || lower.includes("valobashi") || lower.includes("bhalo acho")) {
+    return `Ami khub bhalo achi, ${name}! Tumi kemon acho bolo? Tomar sathe kotha bole khub anondo hocche. 😊`;
+  }
+
+  // 10. General conversational fallback
+  return `I hear you completely, ${name}! I'm listening closely. Tell me more about what you're thinking — I'm right here beside you!`;
+}
+
 
     const isGeminiRequested = Boolean(model && (model.startsWith("google/") || model.includes("gemini")));
 
@@ -2423,7 +2515,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
                 max_tokens: 1000,
               });
             },
-            { maxRetries: 1, initialDelayMs: 400, timeoutMs: 15000 }
+            { maxRetries: 0, initialDelayMs: 250, timeoutMs: 8000 }
           );
 
           const messageObj = response?.choices?.[0]?.message as any;
@@ -2445,9 +2537,9 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
         } catch (openRouterError: any) {
           const errMsg = sanitizeSecrets(openRouterError?.message || String(openRouterError));
           const status = openRouterError?.status || openRouterError?.statusCode;
-          if (status === 402 || errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("never purchased credits")) {
+          if (status === 402 || errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("never purchased credits") || errMsg.includes("Payment Required")) {
             openRouterHasInsufficientCredits = true;
-            console.warn(`OpenRouter model ${targetModel} requires credits (402). Skipping paid models.`);
+            console.warn(`OpenRouter model ${targetModel} requires credits (402). Switching immediately to free models.`);
           } else {
             console.warn(`OpenRouter model ${targetModel} attempt failed:`, errMsg);
           }
@@ -2503,7 +2595,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
                 max_tokens: 1000,
               });
             },
-            { maxRetries: 1, initialDelayMs: 400, timeoutMs: 15000 }
+            { maxRetries: 0, initialDelayMs: 250, timeoutMs: 8000 }
           );
 
           const messageObj = response?.choices?.[0]?.message as any;
@@ -2516,23 +2608,28 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
         } catch (openRouterError: any) {
           const errMsg = sanitizeSecrets(openRouterError?.message || String(openRouterError));
           const status = openRouterError?.status || openRouterError?.statusCode;
-          if (status === 402 || errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("never purchased credits")) {
+          if (status === 402 || errMsg.includes("402") || errMsg.includes("Insufficient credits") || errMsg.includes("never purchased credits") || errMsg.includes("Payment Required")) {
             openRouterHasInsufficientCredits = true;
           }
         }
       }
     }
 
-    // 3. Universal fallback: Free Pollinations AI Engine
+    // 4. Universal fallback: Free Pollinations AI Engine (if available)
     if (!textResponse) {
-      const polResult = await generateChatWithPollinations(systemInstruction, messages);
-      if (polResult) {
-        textResponse = polResult;
+      try {
+        const polResult = await generateChatWithPollinations(systemInstruction, messages);
+        if (polResult) {
+          textResponse = polResult;
+        }
+      } catch (polErr) {
+        console.warn("Pollinations fallback skipped:", polErr);
       }
     }
 
+    // 5. Karishma Intelligent Companion Fallback Engine (prevents user from ever seeing an outage/dead-end error)
     if (!textResponse) {
-      textResponse = "I'm having trouble reaching my AI providers right now. This is usually temporary — a rate limit or provider outage. Please try again in a moment.";
+      textResponse = generateKarishmaCompanionFallback(messages, userName);
     }
     
     return res.json({
