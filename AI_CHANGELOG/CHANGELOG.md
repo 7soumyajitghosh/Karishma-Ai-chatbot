@@ -6,6 +6,31 @@ This changelog records all meaningful modifications made by AI agents working on
 
 ## 2026-09-04
 
+Agent/Task: Full Android & APK Compatibility Audit, Toolchain Setup, and Build Verification
+Files Modified:
+- `android/local.properties`
+- `android/gradle.properties`
+- `android/gradlew.bat`
+- `android/app/src/main/AndroidManifest.xml`
+- `android/app/src/main/res/xml/network_security_config.xml`
+- `src/lib/native.ts`
+What Changed:
+1. Configured Android SDK location in `android/local.properties` (`C:\Users\asimc\AppData\Local\Android\Sdk`).
+2. Installed OpenJDK 21 LTS (`jdk-21.0.12.1+1`) and pinned `org.gradle.java.home` in `android/gradle.properties` plus updated `gradlew.bat` to satisfy Capacitor 8's Java 21 compilation requirement.
+3. Added missing Android permissions (`RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `ACCESS_NETWORK_STATE`) in `AndroidManifest.xml` to support voice microphone recognition in WebView.
+4. Created and linked `network_security_config.xml` to guarantee trusted network communications with Render backend (`karishma-ai-chatbot.onrender.com`) and local debugging environments.
+5. Hardened `isNativeApp()` in `src/lib/native.ts` with direct `@capacitor/core` import to ensure deterministic platform detection.
+Why:
+User requested a full compatibility audit comparing web vs. APK and resolving all blocking build and runtime issues before compiling the release APK.
+Problem Solved:
+Resolved SDK missing error, Java 21 compilation incompatibility, missing audio permissions, and potential WebView network/platform race conditions. The Android debug APK compiles cleanly.
+Verification:
+`npm run lint`, `npm run build:android`, `npx cap sync android`, and `gradlew.bat assembleDebug` all succeeded with 0 errors. Verified generation of `app-debug.apk` (4.5 MB). Web build (`npm run build`) remains 100% operational.
+
+---
+
+## 2026-09-04
+
 Agent/Task: UI Cleanup — Remove Starter Prompt Suggestions and AI Provider Status from Settings
 Files Modified:
 - `src/App.tsx`

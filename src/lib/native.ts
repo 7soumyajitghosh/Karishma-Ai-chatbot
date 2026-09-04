@@ -17,6 +17,8 @@
  * No UI, colour, font, spacing or layout decision is made here.
  */
 
+import { Capacitor } from '@capacitor/core';
+
 /* ------------------------------------------------------------------ *
  * Platform detection
  * ------------------------------------------------------------------ */
@@ -34,6 +36,11 @@ function getCapacitor(): CapacitorGlobal | undefined {
 
 /** True only when running inside the Android (or iOS) shell. */
 export function isNativeApp(): boolean {
+  try {
+    if (Capacitor.isNativePlatform()) return true;
+  } catch {
+    // Fall back to window check if Capacitor core is not ready
+  }
   const cap = getCapacitor();
   return Boolean(cap?.isNativePlatform?.());
 }
