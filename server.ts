@@ -57,7 +57,11 @@ try {
   // Ignore if not supported in environment
 }
 
-const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig as any);
+const resolvedFirebaseConfig = {
+  ...firebaseConfig,
+  apiKey: process.env.FIREBASE_API_KEY || (firebaseConfig as any).apiKey || "",
+};
+const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(resolvedFirebaseConfig as any);
 const dbId = (firebaseConfig as any).firestoreDatabaseId && (firebaseConfig as any).firestoreDatabaseId !== "(default)"
   ? (firebaseConfig as any).firestoreDatabaseId
   : undefined;

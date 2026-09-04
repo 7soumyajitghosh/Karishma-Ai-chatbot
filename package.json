@@ -12,7 +12,8 @@
     "build:android": "vite build --mode android --outDir dist-android --emptyOutDir",
     "sync:android": "npm run build:android && cap sync android",
     "open:android": "cap open android",
-    "apk:debug": "npm run sync:android && cd android && gradlew.bat assembleDebug"
+    "apk:debug": "npm run sync:android && cd android && gradlew.bat assembleDebug",
+    "scan:strix": "strix --target . --scan-mode quick"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

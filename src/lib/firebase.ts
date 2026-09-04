@@ -15,8 +15,18 @@ import {
 import { getAuth, signInAnonymously } from "firebase/auth";
 import firebaseConfig from "../../firebase-applet-config.json";
 
+// Resolve runtime Firebase configuration safely without exposing keys in source control
+const resolvedFirebaseConfig = {
+  ...firebaseConfig,
+  apiKey:
+    (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_FIREBASE_API_KEY) ||
+    (typeof process !== "undefined" && process.env?.FIREBASE_API_KEY) ||
+    firebaseConfig.apiKey ||
+    "",
+};
+
 // Initialize Firebase App
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+const app = getApps().length > 0 ? getApp() : initializeApp(resolvedFirebaseConfig);
 
 // Set Firestore log level to silent to suppress internal gRPC idle stream cycling messages
 try {

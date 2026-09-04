@@ -12,3 +12,14 @@ coverage/
 # secret anyway -- and it must be committed, or a fresh clone builds an APK with
 # an empty API base that fails every /api request. Keys stay in Render env vars.
 !.env.android
+
+# Backups and temporary artifacts
+*.backup*
+*.bak
+server_backup.ts
+.self_repair_backups/
+.self_repair_audit.json
+
+# Strix security test artifacts
+strix_runs/
+.strix/
