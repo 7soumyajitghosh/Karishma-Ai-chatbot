@@ -342,27 +342,11 @@ function App() {
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
 
-  // AI Provider Status — keys live in the backend environment, never in the
-  // browser. /api/health reports booleans only, never key material.
-  const [providerStatus, setProviderStatus] = useState<{ glm?: boolean; gemini?: boolean; openrouter?: boolean } | null>(null);
-
   // UI States
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-
-  // Fetch server-side provider configuration status (booleans only) the first
-  // time the Settings panel opens.
-  useEffect(() => {
-    if (!showSettings || providerStatus) return;
-    fetch("/api/health")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.configured) setProviderStatus(data.configured);
-      })
-      .catch(() => {});
-  }, [showSettings, providerStatus]);
   const [showModelSwitcher, setShowModelSwitcher] = useState(false);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
@@ -3275,29 +3259,6 @@ function App() {
                         ? `Hey, ${userName}! 😊 It's really nice to meet you. What's on your mind today?`
                         : "hey! ☕ so glad you opened this up. was just sitting here with some coffee thinking about what we should get into today. how's everything going with you?"}
                     </h2>
-
-                    {/* Starter Prompt Suggestion Chips */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full mt-4 text-left">
-                      {[
-                        { icon: "💬", title: "Banglish e kotha bolo", prompt: "kemon achis Karishma? aajker khabor ki bolo to!" },
-                        { icon: "📖", title: "Tell me a Bengali story", prompt: "বাংলায় একটি সুন্দর ও চমৎকার গল্প শোনাও।" },
-                        { icon: "💡", title: "Explain AI simply", prompt: "Explain how artificial intelligence works in simple everyday terms." },
-                        { icon: "📝", title: "Draft a friendly email", prompt: "Help me write a friendly email thanking a colleague for their help." }
-                      ].map((item, idx) => (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => handleSendMessage(item.prompt)}
-                          className="p-3.5 bg-white border border-[#EBE6DD] hover:border-[#D96B43] rounded-2xl text-left transition-all hover:shadow-md cursor-pointer group flex items-start gap-3"
-                        >
-                          <span className="text-lg shrink-0">{item.icon}</span>
-                          <div>
-                            <p className="text-xs font-semibold text-[#2C2A29] group-hover:text-[#D96B43] transition-colors">{item.title}</p>
-                            <p className="text-[11px] text-[#8C857E] truncate mt-0.5">{item.prompt}</p>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 )}
 
@@ -4659,42 +4620,6 @@ function App() {
               </div>
               
               <div className="flex-1 overflow-y-auto p-5 space-y-8">
-                
-                {/* CATEGORY: AI Provider Status */}
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold text-[#8C857E] uppercase tracking-wider mb-2 flex items-center gap-2">
-                    <Key className="w-3.5 h-3.5 text-[#D96B43]" />
-                    AI Provider Status
-                  </h3>
-
-                  <div className="bg-white border border-[#EBE6DD] rounded-2xl p-4 shadow-sm space-y-3">
-                    <p className="text-xs text-[#8C857E] leading-relaxed">
-                      Karishma connects to its AI providers through securely configured server keys. No API key entry is needed — chat works out of the box.
-                    </p>
-
-                    {[
-                      { id: "glm", label: "GLM" },
-                      { id: "gemini", label: "Google Gemini" },
-                      { id: "openrouter", label: "OpenRouter" },
-                    ].map((p) => {
-                      const configured = providerStatus ? Boolean((providerStatus as Record<string, boolean | undefined>)[p.id]) : null;
-                      return (
-                        <div key={p.id} className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-[#2C2A29]">{p.label}</span>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            configured === null
-                              ? "bg-gray-100 text-gray-500"
-                              : configured
-                              ? "bg-emerald-50 text-emerald-600 border border-emerald-200"
-                              : "bg-amber-50 text-amber-600 border border-amber-200"
-                          }`}>
-                            {configured === null ? "Checking…" : configured ? "Server configured" : "Not configured"}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
 
                 {/* CATEGORY: Appearance */}
                 <div className="space-y-4">

@@ -6,6 +6,25 @@ This changelog records all meaningful modifications made by AI agents working on
 
 ## 2026-09-04
 
+Agent/Task: UI Cleanup — Remove Starter Prompt Suggestions and AI Provider Status from Settings
+Files Modified:
+- `src/App.tsx`
+What Changed:
+1. Removed the 4 starter prompt suggestion chips ("Banglish e kotha bolo", "Tell me a Bengali story", "Explain AI simply", "Draft a friendly email") from the home screen welcome state.
+2. Removed the "AI Provider Status" category section, descriptive text, and provider badges ("GLM", "Google Gemini", "OpenRouter") from the Settings panel.
+3. Cleaned up unused `providerStatus` state and its `/api/health` polling effect in `src/App.tsx`.
+4. Kept backend API endpoints, AI provider credentials, model fallback routing, and chat engine completely intact.
+Why:
+Requested by user to clean up the interface and simplify the Settings drawer and home screen.
+Problem Solved:
+The home screen now presents a cleaner, uncluttered welcome experience, and the Settings drawer focuses strictly on user-configurable options (Theme, Sounds & Haptics, Data & Privacy, Account) without exposing internal AI provider status badges.
+Verification:
+`npm run build` and `npm run lint` (`tsc --noEmit`) succeeded with 0 errors. Verified with grep that none of the target strings or unused states remain in UI code.
+
+---
+
+## 2026-09-04
+
 Agent/Task: Fix Supabase History & OTP "public.conversations" / "public.auth_otps" Schema Cache Missing Error
 Files Modified:
 - `server/supabaseHistory.ts`
