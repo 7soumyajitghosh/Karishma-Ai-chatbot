@@ -1,11 +1,13 @@
 node_modules
 dist
+dist-android
 android
+android-kotlin-old
+android-kotlin-gutted-20260903
 android-native-legacy
 .git
 .env
 .env.*
-db.json
 *.apk
 *.aab
 .gradle

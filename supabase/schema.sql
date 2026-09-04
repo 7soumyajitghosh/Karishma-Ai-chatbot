@@ -81,3 +81,49 @@ BEGIN
       WITH CHECK (TRUE);
   END IF;
 END $$;
+
+-- 6. Pending OTP / password-reset codes
+--
+-- Replaces the in-memory Map that used to hold these in the Node process, which
+-- lost every pending signup on restart, redeploy, or idle sleep.
+-- Full commentary in supabase/migrations/202609040001_create_auth_otps.sql.
+CREATE TABLE IF NOT EXISTS public.auth_otps (
+  email              TEXT PRIMARY KEY,
+  hashed_otp         TEXT NOT NULL,
+  expires_at         TIMESTAMPTZ NOT NULL,
+  resend_at          TIMESTAMPTZ NOT NULL,
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  -- NULL marks a password-reset flow; an object marks a pending signup.
+  pending_user       JSONB,
+  verified_for_reset BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS auth_otps_expires_at_idx
+  ON public.auth_otps (expires_at);
+
+-- Atomic attempt counter, so two simultaneous guesses cannot both see attempts = 4.
+CREATE OR REPLACE FUNCTION public.increment_otp_attempts(p_email TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.auth_otps
+     SET attempts = attempts + 1
+   WHERE email = p_email
+  RETURNING attempts INTO new_count;
+
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+-- RLS on with NO policies: only the service-role key (backend only) can touch it.
+-- Unlike the tables above, this one must never be readable by anon/authenticated --
+-- it holds bcrypt hashes and pending signup payloads.
+ALTER TABLE public.auth_otps ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.auth_otps FROM anon, authenticated;
+REVOKE ALL ON FUNCTION public.increment_otp_attempts(TEXT) FROM anon, authenticated;

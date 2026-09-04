@@ -5,7 +5,11 @@ import https from "https";
 
 import express from "express";
 
-import { createServer as createViteServer } from "vite";
+// NOTE: `vite` is deliberately NOT imported here. It is only needed by the dev
+// server, and a top-level import becomes a `require("vite")` at the very top of
+// dist/server.cjs that runs in production too -- loading Vite's whole Node API
+// (plus rollup) into a container that never uses it. On a 512MB instance that
+// matters. startServer() imports it dynamically inside the non-production branch.
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 import * as dotenv from "dotenv";
@@ -32,6 +36,15 @@ import {
   diagnoseWithClaudePuter,
 } from "./server/selfRepairEngine";
 import { deleteConversation, getConversationHistory, saveConversation, findUserByEmailSupabase, upsertUserSupabase } from "./server/supabaseHistory";
+import {
+  getOtp,
+  setOtp,
+  deleteOtp,
+  bumpOtpAttempts,
+  markVerifiedForReset,
+  isOtpStoreDurable,
+  startOtpPurgeLoop,
+} from "./server/otpStore";
 
 dotenv.config();
 
@@ -666,12 +679,183 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+// 16mb, not 50mb. These parsers run on every route, and the expensive ones are
+// reachable without logging in, so the old limit let an anonymous caller pin
+// 50mb of heap per in-flight request on a 512mb Render instance. 16mb still
+// comfortably fits a phone photo after base64 inflation (~1.34x), which is the
+// largest legitimate body the app sends (/api/transform-illustration).
+// Keep the 413 message below in sync with this number.
+const MAX_BODY_SIZE = "16mb";
+app.use(express.json({ limit: MAX_BODY_SIZE }));
+app.use(express.urlencoded({ limit: MAX_BODY_SIZE, extended: true }));
 
-// Health check endpoint
+/* ------------------------------------------------------------------ *
+ * Hosted-key guard for the provider-spending routes
+ * ------------------------------------------------------------------ *
+ * /api/chat, /api/tts, /api/generate-image and /api/transform-illustration all
+ * fall back to the OWNER's OPENROUTER_API_KEY / GEMINI_API_KEY when the caller
+ * does not supply one (see resolveApiKeys). None of them has any authentication
+ * -- deliberately, because Guest Mode has to work without an account -- so on a
+ * public URL they were an open AI relay billed to the project owner.
+ *
+ * The guard is intentionally NOT authentication. It only requires that a caller
+ * spending the owner's credits be one of the two real clients:
+ *
+ *   - the web app, served by this same Express process, so its Origin equals
+ *     this request's own Host (or APP_URL behind a proxy), and
+ *   - the Android WebView, whose Origin is one of NATIVE_ORIGINS.
+ *
+ * Both send Origin on every one of these calls: they are JSON POSTs, and the
+ * Fetch standard requires Origin on any request whose method is not GET/HEAD.
+ * What gets rejected is the case that was actually costing money -- a script or
+ * bot hitting the public URL with no Origin at all. Cross-origin *browser*
+ * abuse was already blocked by the CORS block above.
+ *
+ * Bring-your-own-key callers are let through untouched: they are paying, and
+ * that is an existing product feature (Settings -> API key).
+ *
+ * Being honest about the limit: an attacker can still forge an Origin header
+ * from curl. Closing that needs real per-user auth, which would break Guest
+ * Mode, so it is a deliberate product decision left to the owner rather than
+ * something this guard pretends to solve.
+ * ------------------------------------------------------------------ */
+function isTrustedClientOrigin(req: express.Request): boolean {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || !origin) return false;
+
+  // Android / iOS Capacitor WebView.
+  if (NATIVE_ORIGINS.has(origin)) return true;
+
+  // The web app is served by this process, so it is same-origin.
+  const host = req.headers.host;
+  if (host && (origin === `https://${host}` || origin === `http://${host}`)) {
+    return true;
+  }
+
+  // Behind Render's proxy the forwarded host is authoritative.
+  const fwdHost = req.headers["x-forwarded-host"];
+  const forwardedHost = Array.isArray(fwdHost) ? fwdHost[0] : fwdHost;
+  if (forwardedHost && (origin === `https://${forwardedHost}` || origin === `http://${forwardedHost}`)) {
+    return true;
+  }
+
+  const appUrl = (process.env.APP_URL || "").trim().replace(/\/+$/, "");
+  if (appUrl && origin === appUrl) return true;
+
+  return false;
+}
+
+function callerSuppliedProviderKey(req: express.Request): boolean {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  return Boolean(
+    req.headers["x-openrouter-api-key"] ||
+      req.headers["x-gemini-api-key"] ||
+      body.customOpenRouterKey ||
+      body.customGeminiKey
+  );
+}
+
+const PROVIDER_SPENDING_ROUTES = [
+  "/api/chat",
+  "/api/tts",
+  "/api/generate-image",
+  "/api/transform-illustration",
+];
+
+app.use(PROVIDER_SPENDING_ROUTES, (req, res, next) => {
+  // Preflight is answered by the CORS block above; never 403 an OPTIONS.
+  if (req.method === "OPTIONS") return next();
+  if (callerSuppliedProviderKey(req)) return next();
+  if (isTrustedClientOrigin(req)) return next();
+
+  // Logged so a genuine client rejected in production is diagnosable from the
+  // Render logs in one line. originalUrl, not path: inside an app.use(paths, ..)
+  // mount req.path is relative to the mount point and reads as just "/".
+  // Origin is caller-supplied, so keep it short and never echo it back.
+  console.warn(
+    `[hosted-key guard] refused ${req.method} ${req.originalUrl} from origin=${
+      String(req.headers.origin ?? "<none>").slice(0, 100)
+    }`
+  );
+  return res.status(403).json({
+    error:
+      "This endpoint is only available to the Karishma web app and Android app. " +
+      "To use it directly, add your own Gemini or OpenRouter key in Settings.",
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Developer-only endpoint gate
+ * ------------------------------------------------------------------ *
+ * Two route groups are developer tooling, not product surface:
+ *
+ *   /api/self-repair/*  drives an LLM that rewrites files under src/, server.ts
+ *                       and server/, and /rollback takes a caller-supplied
+ *                       target path.
+ *   /api/test/*         creates real users in Firestore and Supabase on every
+ *                       call.
+ *
+ * Both were written for a developer on localhost and have no authentication of
+ * their own. Now that the backend has a public URL they have to be closed off.
+ *
+ *   - Outside production: open, so `npm run dev` behaves exactly as before.
+ *   - In production: 404 unless SELF_REPAIR_TOKEN is set AND the request carries
+ *     it in `x-self-repair-token`. 404 rather than 401 so the routes cannot be
+ *     discovered by probing.
+ *
+ * Leave SELF_REPAIR_TOKEN unset on the deployed service; that is the safe
+ * default and disables both groups entirely.
+ *
+ * This must be registered here, above the route definitions, because Express
+ * runs middleware in registration order -- mounting it further down the file
+ * would leave the earlier /api/test route unguarded.
+ */
+function devOnlyGate(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (process.env.NODE_ENV !== "production") return next();
+
+  const notFound = () =>
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+
+  const expected = process.env.SELF_REPAIR_TOKEN;
+  if (!expected) return notFound();
+
+  const presented = req.get("x-self-repair-token") || "";
+  // Constant-time compare so the token cannot be recovered by timing responses.
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    console.warn(`[devOnlyGate] rejected ${req.method} ${req.originalUrl} from ${req.ip}`);
+    return notFound();
+  }
+
+  return next();
+}
+
+app.use("/api/self-repair", devOnlyGate);
+app.use("/api/test", devOnlyGate);
+
+// Health check endpoint.
+//
+// Render pings this to decide whether a deploy is live, so it must stay fast and
+// dependency-free (no database round-trip). It also doubles as a config probe
+// after deploying: every field below is a boolean or a fixed label -- never a
+// key, value, or URL -- so it is safe to open in a browser.
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
+  const isProd = process.env.NODE_ENV === "production";
+  res.json({
+    status: "ok",
+    env: isProd ? "production" : "development",
+    // "supabase" = pending signups survive a restart. "memory" = they do not.
+    otpStore: isOtpStoreDurable() ? "supabase" : "memory",
+    configured: {
+      supabase: isOtpStoreDurable(),
+      brevo: Boolean(process.env.BREVO_API_KEY),
+      openrouter: Boolean(process.env.OPENROUTER_API_KEY),
+      gemini: Boolean(process.env.GEMINI_API_KEY),
+    },
+    // Confirms /api/self-repair/* and /api/test/* are closed on the public URL.
+    devEndpoints: !isProd ? "open (dev)" : process.env.SELF_REPAIR_TOKEN ? "token-required" : "disabled",
+  });
 });
 
 // In-memory Auth Stores
@@ -680,14 +864,15 @@ const disposableDomains = new Set([
   "yopmail.com", "temp-mail.org", "throwawaymail.com", "tempmail.net", "fakemail.net"
 ]);
 
-const otpStore = new Map<string, {
-  hashedOtp: string;
-  expiresAt: number;
-  resendAt: number;
-  attempts: number;
-  pendingUser: any;
-  verifiedForReset?: boolean;
-}>();
+// Pending signup / password-reset codes now live in Supabase, not in a
+// process-local Map. See server/otpStore.ts and
+// supabase/migrations/202609040001_create_auth_otps.sql.
+//
+// The old `otpStore` Map is deliberately gone rather than wrapped in a
+// sync-looking shim: every access is a round trip now, and a shim returning
+// promises would have made `if (!store)` silently always-true. The imported
+// getOtp/setOtp/deleteOtp/bumpOtpAttempts/markVerifiedForReset are used directly
+// so the compiler flags any call site that forgets to await.
 
 // Simple in-memory user store (email -> user data)
 // Simple in-memory database
@@ -1030,6 +1215,14 @@ app.get("/api/auth/brevo-status", async (req, res) => {
 // Auth endpoints
 app.post("/api/auth/send-otp", async (req, res) => {
   try {
+    // The per-email resendAt cooldown below stops one address being hammered,
+    // but nothing stopped one caller cycling through many addresses -- each of
+    // which sends a real Brevo email to a stranger and spends the sending quota.
+    // A real signup needs one or two of these.
+    if (isRateLimited(`otp:${clientIpOf(req)}`, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: "Too many verification requests. Please try again later." });
+    }
+
     let { name, fullName, nickname, email, password } = req.body;
     if (email) email = email.trim().toLowerCase();
     if (!email || !email.includes("@")) {
@@ -1052,7 +1245,7 @@ app.post("/api/auth/send-otp", async (req, res) => {
       return res.status(400).json({ error: "An account with this email already exists. Please log in or use a different email address." });
     }
 
-    const existing = otpStore.get(email);
+    const existing = await getOtp(email);
     if (existing && Date.now() < existing.resendAt) {
       const waitSecs = Math.ceil((existing.resendAt - Date.now()) / 1000);
       return res.status(429).json({ error: `Please wait ${waitSecs}s before requesting a new OTP.` });
@@ -1061,33 +1254,49 @@ app.post("/api/auth/send-otp", async (req, res) => {
     const otp = crypto.randomInt(100000, 999999).toString();
     const hashedOtp = await bcrypt.hash(otp, 10);
     const hashedPassword = await bcrypt.hash(password || "", 10);
-    
-    const brevoResult = await sendBrevoEmail(email, otp);
-    if (!brevoResult.success) {
-      console.log(`[OTP Verification Engine] OTP generated for ${email}: ${otp}`);
-    }
 
     const finalFullName = (fullName || name || "").trim();
     const finalNickname = (nickname || "").trim();
 
-    otpStore.set(email, {
-      hashedOtp,
-      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-      resendAt: Date.now() + 60 * 1000, // 1 minute cooldown
-      attempts: 0,
-      pendingUser: {
-        id: crypto.randomUUID(),
-        fullName: finalFullName,
-        nickname: finalNickname,
-        name: finalNickname || finalFullName || email.split("@")[0],
-        email,
-        password: hashedPassword,
-        createdAt: Date.now()
-      }
-    });
+    // Persist BEFORE emailing. The other order could deliver a code that the
+    // store never accepted, leaving the user typing a valid-looking OTP that
+    // always fails.
+    try {
+      await setOtp(email, {
+        hashedOtp,
+        expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+        resendAt: Date.now() + 60 * 1000, // 1 minute cooldown
+        attempts: 0,
+        pendingUser: {
+          id: crypto.randomUUID(),
+          fullName: finalFullName,
+          nickname: finalNickname,
+          name: finalNickname || finalFullName || email.split("@")[0],
+          email,
+          password: hashedPassword,
+          createdAt: Date.now()
+        }
+      });
+    } catch (storeError: any) {
+      console.error("Failed to persist OTP:", storeError?.message || storeError);
+      return res.status(503).json({ error: "Could not start verification right now. Please try again in a moment." });
+    }
 
-    res.json({ 
-      success: true, 
+    const brevoResult = await sendBrevoEmail(email, otp);
+    if (!brevoResult.success) {
+      // Printing the code is a development convenience so signup still works
+      // with no Brevo key configured. In production it would put a live
+      // credential into the Render log stream, where anyone with dashboard
+      // access could use it to complete a signup for someone else's address.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[OTP Verification Engine] OTP generated for ${email}: ${otp}`);
+      } else {
+        console.error(`[OTP] Brevo delivery failed for ${email}; code withheld from logs.`);
+      }
+    }
+
+    res.json({
+      success: true,
       message: "Verification code sent successfully.",
       emailDelivered: brevoResult.success
     });
@@ -1101,23 +1310,30 @@ app.post("/api/auth/verify-otp", async (req, res) => {
   try {
     let { email, otp } = req.body;
     if (email) email = email.trim().toLowerCase();
-    const store = otpStore.get(email);
-    
+    const store = await getOtp(email);
+
     if (!store) {
       return res.status(400).json({ error: "No pending verification found or OTP expired." });
     }
-    
+
     if (Date.now() > store.expiresAt) {
-      otpStore.delete(email);
+      await deleteOtp(email);
       return res.status(400).json({ error: "OTP has expired. Please request a new one." });
     }
 
     if (store.attempts >= 5) {
-      otpStore.delete(email);
+      await deleteOtp(email);
       return res.status(429).json({ error: "Too many failed attempts. Please request a new OTP." });
     }
-    
-    store.attempts++;
+
+    // Count the attempt before checking, and re-check the limit against the
+    // value the database actually recorded, so concurrent guesses cannot both
+    // read attempts = 4 and get a sixth try between them.
+    const attemptCount = await bumpOtpAttempts(email);
+    if (attemptCount > 5) {
+      await deleteOtp(email);
+      return res.status(429).json({ error: "Too many failed attempts. Please request a new OTP." });
+    }
 
     const isValid = await bcrypt.compare(otp, store.hashedOtp);
     if (!isValid) {
@@ -1127,7 +1343,7 @@ app.post("/api/auth/verify-otp", async (req, res) => {
     // Verify account doesn't already exist in database before saving
     const existingUser = await findUserByEmail(email);
     if (existingUser) {
-      otpStore.delete(email);
+      await deleteOtp(email);
       return res.status(400).json({ error: "An account with this email already exists. Please log in." });
     }
 
@@ -1142,10 +1358,10 @@ app.post("/api/auth/verify-otp", async (req, res) => {
       return res.status(500).json({ error: "Failed to save account record to database. Please try verifying again." });
     }
 
-    otpStore.delete(email);
+    await deleteOtp(email);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       user: {
         id: newUser.id,
         fullName: newUser.fullName || newUser.name || "",
@@ -1169,6 +1385,17 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email and password are required." });
     }
 
+    // This route had no limit of any kind, so passwords could be brute-forced at
+    // full speed -- and because every attempt runs bcrypt.compare (cost 10), a
+    // few concurrent attackers also saturate a 0.1-CPU Render instance. Bucketed
+    // by IP and, separately, by email so that spreading an attack across many
+    // addresses or many source addresses still gets throttled.
+    const ipBucket = `login:${clientIpOf(req)}`;
+    const emailBucket = `login-email:${email}`;
+    if (isRateLimited(ipBucket, 20, 10 * 60 * 1000) || isRateLimited(emailBucket, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: "Too many login attempts. Please wait a few minutes and try again." });
+    }
+
     // Lookup account in real persistent database source of truth
     const user = await findUserByEmail(email);
     if (!user || !user.password) {
@@ -1185,6 +1412,13 @@ app.post("/api/auth/login", async (req, res) => {
     const token = crypto.randomUUID();
     if (!user.sessionTokens) user.sessionTokens = [];
     user.sessionTokens.push(token);
+    // Tokens never expire and were appended forever, so the user document grew
+    // without bound and every device ever logged in kept a permanent credential.
+    // Keep only the most recent few sessions.
+    const MAX_SESSION_TOKENS = 10;
+    if (user.sessionTokens.length > MAX_SESSION_TOKENS) {
+      user.sessionTokens = user.sessionTokens.slice(-MAX_SESSION_TOKENS);
+    }
 
     await saveUserToFirestore(user).catch(e => console.warn("Failed to update session token in Firestore:", e));
 
@@ -1282,6 +1516,10 @@ const GEMINI_TTS_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes cooldown on quota e
 
 app.post("/api/tts", async (req, res) => {
   try {
+    // Every TTS call spends the owner's Gemini quota and had no limit.
+    if (isRateLimited(`tts:${clientIpOf(req)}`, 30, 60000)) {
+      return res.status(429).json({ error: "Too many speech requests. Please wait a moment." });
+    }
     const { text, lang } = req.body;
     if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Text is required" });
@@ -1461,6 +1699,13 @@ app.post("/api/auth/change-password", async (req, res) => {
 
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
+    // Same abuse vector as /api/auth/send-otp: one caller, many addresses, a
+    // real email each time. Also slows account-existence enumeration, which the
+    // distinct 400 below otherwise makes free.
+    if (isRateLimited(`otp:${clientIpOf(req)}`, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: "Too many verification requests. Please try again later." });
+    }
+
     let { email } = req.body;
     if (email) email = email.trim().toLowerCase();
     const user = await findUserByEmail(email);
@@ -1470,29 +1715,41 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       return res.status(400).json({ error: "No account found with this email address. Please create an account first." });
     }
 
-    const existing = otpStore.get(email);
+    const existing = await getOtp(email);
     if (existing && Date.now() < existing.resendAt) {
       return res.status(429).json({ error: "Please wait before requesting a new OTP." });
     }
 
     const otp = crypto.randomInt(100000, 999999).toString();
     const hashedOtp = await bcrypt.hash(otp, 10);
-    
-    const brevoResult = await sendBrevoEmail(email, otp, "Reset Your Password - Verification Code");
-    if (!brevoResult.success) {
-      console.log(`[Reset OTP Verification Engine] Reset OTP generated for ${email}: ${otp}`);
+
+    // Persist before emailing, same reasoning as /api/auth/send-otp.
+    try {
+      await setOtp(email, {
+        hashedOtp,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        resendAt: Date.now() + 60 * 1000,
+        attempts: 0,
+        pendingUser: null // null marks this as a reset rather than a signup
+      });
+    } catch (storeError: any) {
+      console.error("Failed to persist reset OTP:", storeError?.message || storeError);
+      return res.status(503).json({ error: "Could not start password reset right now. Please try again in a moment." });
     }
 
-    otpStore.set(email, {
-      hashedOtp,
-      expiresAt: Date.now() + 10 * 60 * 1000,
-      resendAt: Date.now() + 60 * 1000,
-      attempts: 0,
-      pendingUser: null // indicator for reset
-    });
+    const brevoResult = await sendBrevoEmail(email, otp, "Reset Your Password - Verification Code");
+    if (!brevoResult.success) {
+      // Never in production: a logged reset code is a password-reset takeover
+      // for anyone who can read the log stream. See /api/auth/send-otp.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[Reset OTP Verification Engine] Reset OTP generated for ${email}: ${otp}`);
+      } else {
+        console.error(`[OTP] Brevo delivery failed for password reset; code withheld from logs.`);
+      }
+    }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: "Reset verification code sent.",
       emailDelivered: brevoResult.success
     });
@@ -1513,26 +1770,31 @@ app.post("/api/auth/verify-reset-otp", async (req, res) => {
       return res.status(400).json({ error: "No account found with this email address." });
     }
 
-    const store = otpStore.get(email);
+    const store = await getOtp(email);
     if (!store || store.pendingUser !== null) {
       return res.status(400).json({ error: "No pending password reset request found. Please request a new code." });
     }
     if (Date.now() > store.expiresAt) {
-      otpStore.delete(email);
+      await deleteOtp(email);
       return res.status(400).json({ error: "The OTP has expired. Please request a new code." });
     }
     if (store.attempts >= 5) {
-      otpStore.delete(email);
+      await deleteOtp(email);
+      return res.status(429).json({ error: "Too many failed attempts. Please request a new code." });
+    }
+
+    const attemptCount = await bumpOtpAttempts(email);
+    if (attemptCount > 5) {
+      await deleteOtp(email);
       return res.status(429).json({ error: "Too many failed attempts. Please request a new code." });
     }
 
     const isValid = await bcrypt.compare(otp, store.hashedOtp);
     if (!isValid) {
-      store.attempts++;
       return res.status(400).json({ error: "Incorrect OTP code. Please check your email and try again." });
     }
 
-    store.verifiedForReset = true;
+    await markVerifiedForReset(email);
     res.json({ success: true, message: "OTP verified successfully." });
   } catch (error) {
     console.error("Verify reset OTP error:", error);
@@ -1552,7 +1814,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
       return res.status(400).json({ error: "No account found with this email address." });
     }
 
-    const store = otpStore.get(email);
+    const store = await getOtp(email);
     if (!store || store.pendingUser !== null) {
       return res.status(400).json({ error: "No pending password reset found. Please start over." });
     }
@@ -1560,15 +1822,20 @@ app.post("/api/auth/reset-password", async (req, res) => {
     if (!store.verifiedForReset) {
       if (!otp) return res.status(400).json({ error: "OTP is required." });
       if (Date.now() > store.expiresAt) {
-        otpStore.delete(email);
+        await deleteOtp(email);
         return res.status(400).json({ error: "The OTP has expired." });
       }
       if (store.attempts >= 5) {
-        otpStore.delete(email);
+        await deleteOtp(email);
         return res.status(429).json({ error: "Too many failed attempts." });
       }
 
-      store.attempts++;
+      const attemptCount = await bumpOtpAttempts(email);
+      if (attemptCount > 5) {
+        await deleteOtp(email);
+        return res.status(429).json({ error: "Too many failed attempts." });
+      }
+
       const isValid = await bcrypt.compare(otp, store.hashedOtp);
       if (!isValid) {
         return res.status(400).json({ error: "Invalid OTP." });
@@ -1583,7 +1850,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
     user.password = await bcrypt.hash(newPassword, 10);
     user.sessionTokens = [];
     await saveUserToFirestore(user);
-    otpStore.delete(email);
+    await deleteOtp(email);
 
     res.json({ success: true, message: "Password reset successful." });
   } catch (error) {
@@ -1759,8 +2026,32 @@ app.post("/api/test/privacy-isolation", async (req, res) => {
 // Rate limiting helper
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 
+// The map only ever grew: one entry per (bucket, IP) forever, so a caller
+// rotating source addresses could inflate it without bound on a 512mb instance.
+// Expired entries are swept once the map is big enough for that to matter.
+const RATE_LIMIT_SWEEP_THRESHOLD = 5000;
+function sweepRateLimitMap(now: number): void {
+  if (rateLimitMap.size < RATE_LIMIT_SWEEP_THRESHOLD) return;
+  for (const [key, record] of rateLimitMap) {
+    if (now > record.resetTime) rateLimitMap.delete(key);
+  }
+}
+
+/**
+ * Single source of truth for the caller's address. Render terminates TLS at its
+ * proxy, so req.socket.remoteAddress is the proxy; the left-most
+ * x-forwarded-for hop is the client. Spoofable in general, which is why this is
+ * only used for rate-limit bucketing and never for authorization.
+ */
+function clientIpOf(req: express.Request): string {
+  const rawFwd = req.headers["x-forwarded-for"];
+  const fwdStr = Array.isArray(rawFwd) ? rawFwd[0] : (typeof rawFwd === "string" ? rawFwd : "");
+  return (fwdStr || req.socket?.remoteAddress || "client").split(",")[0].trim();
+}
+
 function isRateLimited(ip: string, limit: number = 40, windowMs: number = 60000): boolean {
   const now = Date.now();
+  sweepRateLimitMap(now);
   const record = rateLimitMap.get(ip);
   if (!record || now > record.resetTime) {
     rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
@@ -1776,9 +2067,7 @@ function isRateLimited(ip: string, limit: number = 40, windowMs: number = 60000)
 // Chat endpoint
 app.post("/api/chat", async (req, res) => {
   try {
-    const rawFwd = req.headers["x-forwarded-for"];
-    const fwdStr = Array.isArray(rawFwd) ? rawFwd[0] : (typeof rawFwd === "string" ? rawFwd : "");
-    const clientIp = (fwdStr || req.socket?.remoteAddress || "client").split(",")[0].trim();
+    const clientIp = clientIpOf(req);
     if (isRateLimited(clientIp, 40, 60000)) {
       return res.status(429).json({ error: "Too many requests. Please pause for a moment before sending another message." });
     }
@@ -2008,9 +2297,14 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     list.push("meta-llama/llama-3.1-8b-instruct");
     list.push("meta-llama/llama-3.3-70b-instruct");
   } else {
-    list.push("meta-llama/llama-3.3-70b-instruct");
+    // No model (or an unrecognized one) was sent. Nemotron is this project's
+    // declared default model, so it must lead here too -- this branch used to
+    // put llama-3.3-70b first, which silently made Llama the default for any
+    // caller that omitted `model` (the web client always sends an explicit
+    // Nemotron id, so the mismatch was invisible from the UI).
     list.push("nvidia/nemotron-3-super-120b-a12b");
     list.push("nvidia/nemotron-3-nano-30b-a3b");
+    list.push("meta-llama/llama-3.3-70b-instruct");
     list.push("meta-llama/llama-3.1-8b-instruct");
   }
 
@@ -2183,6 +2477,12 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
 // Dedicated Image Generation endpoint
 app.post("/api/generate-image", async (req, res) => {
   try {
+    // Image generation is the most expensive call in the app and had no rate
+    // limit at all, while /api/chat has had one all along. 6/min per IP is well
+    // above any human's use of the UI button.
+    if (isRateLimited(`img:${clientIpOf(req)}`, 6, 60000)) {
+      return res.status(429).json({ error: "Too many image requests. Please wait a moment before trying again." });
+    }
     const activeKeys = resolveApiKeys(req.headers, req.body);
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== "string") {
@@ -2208,6 +2508,10 @@ app.post("/api/generate-image", async (req, res) => {
 // Dedicated Image-to-Illustration Transformation endpoint (Ghibli Art / Japanese Animated Film Style)
 app.post("/api/transform-illustration", async (req, res) => {
   try {
+    // Same reasoning as /api/generate-image: expensive, previously unlimited.
+    if (isRateLimited(`img:${clientIpOf(req)}`, 6, 60000)) {
+      return res.status(429).json({ error: "Too many image requests. Please wait a moment before trying again." });
+    }
     const activeKeys = resolveApiKeys(req.headers, req.body);
     const { imageBase64, mimeType, customPrompt } = req.body;
     if (!imageBase64 || typeof imageBase64 !== "string") {
@@ -2264,7 +2568,8 @@ app.post("/api/privacy-settings", (req, res) => {
   });
 });
 
-// Endpoint for Automated Self-Repair Engine
+// Endpoint for Automated Self-Repair Engine.
+// Access is controlled by devOnlyGate, registered near the top of this file.
 app.post("/api/self-repair/diagnose-and-fix", async (req, res) => {
   try {
     const repairReq: SelfRepairRequest = req.body;
@@ -2409,7 +2714,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   if (err) {
     console.error("Express Error Handler:", err);
     if (err.type === "entity.too.large") {
-      return res.status(413).json({ error: "The attached file is too large (limit is 50MB). Please select a smaller file." });
+      return res.status(413).json({ error: "The attached file is too large (limit is 16MB). Please select a smaller file." });
     }
     return res.status(err.status || 500).json({ error: err.message || "An unexpected server error occurred." });
   }
@@ -2424,6 +2729,9 @@ app.all("/api/*", (req, res) => {
 // Vite middleware and static asset serving
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // Imported here, not at the top of the file, so the production bundle never
+    // pulls Vite into memory. See the note next to the import block.
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2439,7 +2747,16 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(
+      isOtpStoreDurable()
+        ? "[OTP] Durable store: Supabase table public.auth_otps"
+        : "[OTP] WARNING: in-memory store (Supabase not configured) - pending signups will not survive a restart"
+    );
   });
+
+  // Drops rows whose code expired over an hour ago, so the table cannot be grown
+  // without bound by requesting codes for addresses that are never verified.
+  startOtpPurgeLoop();
 }
 
 // Global uncaught process exception safety handlers

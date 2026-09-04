@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint - hosts the Karishma backend AND the built web app.
+#
+# One container serves both:
+#   GET /api/*  -> Express routes in server.ts
+#   GET /*      -> the Vite build in dist/, with SPA fallback to index.html
+#
+# So https://<your-service>.onrender.com is the web app, and the Android APK
+# points VITE_API_BASE at that same host. Nothing is duplicated.
+#
+# HOW TO USE
+#   1. Commit this file and push to GitHub.
+#   2. Render dashboard -> New -> Blueprint -> pick this repo.
+#   3. Render prompts for every var marked `sync: false` below. Paste them in.
+#   4. First deploy takes ~5-8 min (the Docker build runs `npm run build`).
+#   5. Copy the assigned URL into .env.android as VITE_API_BASE.
+#
+# FREE TIER FACTS THAT AFFECT THIS APP
+#   - The instance spins down after 15 minutes with no inbound request, and the
+#     next request waits ~1 minute for a cold start. The app survives this: OTPs
+#     now live in Supabase (public.auth_otps), not in process memory.
+#   - 512MB RAM / 0.1 CPU, 750 instance-hours per workspace per month.
+#   - Free instances do not scale past one, which is what the remaining
+#     per-process state (rateLimitMap) requires. Do NOT raise instance count
+#     without moving that state into Supabase first.
+# ---------------------------------------------------------------------------
+
+services:
+  - type: web
+    name: karishma-ai
+    runtime: docker
+    plan: free
+    # Closest free region to India. Others: oregon, ohio, virginia, frankfurt.
+    region: singapore
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Render polls this until it returns 2xx before routing traffic to a new
+    # deploy. It does no database work, so a cold Supabase connection cannot
+    # fail a deploy. Open it in a browser after deploying: it reports which
+    # integrations picked up their keys, without echoing any of them.
+    healthCheckPath: /api/health
+
+    autoDeploy: true
+
+    envVars:
+      # --- runtime ---------------------------------------------------------
+      # Drives three things in server.ts: static dist/ serving instead of the
+      # Vite dev middleware, and the production branch of devOnlyGate.
+      - key: NODE_ENV
+        value: production
+
+      # Must match EXPOSE in the Dockerfile. server.ts binds 0.0.0.0:$PORT.
+      - key: PORT
+        value: 8080
+
+      # --- chat models -----------------------------------------------------
+      # Default model is Nemotron via OpenRouter; Gemini is the fallback path.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # --- OTP email (Brevo) ----------------------------------------------
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        value: karishma.ai@outlook.com
+
+      # --- Supabase --------------------------------------------------------
+      # Conversations, messages, users, and the durable OTP table.
+      # SUPABASE_SERVICE_ROLE_KEY bypasses RLS - it belongs on the backend
+      # only. Never expose it through a VITE_ variable.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # --- optional --------------------------------------------------------
+      # Sent to OpenRouter as the HTTP-Referer header, nothing more. If Render
+      # assigns a different subdomain than karishma-ai, update this to match.
+      - key: APP_URL
+        value: https://karishma-ai.onrender.com
+
+      # Image generation. Leave unset to use the keyless Pollinations tier.
+      - key: POLLINATIONS_API_KEY
+        sync: false
+
+      # SELF_REPAIR_TOKEN is deliberately absent.
+      #
+      # Leaving it unset makes /api/self-repair/* and /api/test/* return 404 in
+      # production. That is the intended state for a public URL: those routes
+      # have no auth of their own, self-repair drives an LLM that rewrites
+      # server.ts and files under src/ (and ships their contents to a
+      # third-party API), and /api/test/* creates real users on every call.
+      # Set it in the dashboard only for a deliberate debugging window, then
+      # delete it again.

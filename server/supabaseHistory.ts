@@ -1,5 +1,10 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
+import {
+  hasSupabaseCredentials,
+  readSupabaseCredentials,
+  warnIfNotServiceRoleKey,
+} from "./supabaseKey";
 
 export interface PersistedChatMessage {
   id?: string;
@@ -23,32 +28,16 @@ export interface PersistedChatSession {
 let client: SupabaseClient | null = null;
 
 export function isSupabaseConfigured(): boolean {
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY;
-  return Boolean(url && key);
+  // Publishable/anon keys are deliberately not accepted: users, conversations
+  // and messages are all service-role-only under RLS, so an anon key made this
+  // return true while every query failed. See server/supabaseKey.ts.
+  return hasSupabaseCredentials();
 }
 
 function getClient(): SupabaseClient {
   if (client) return client;
 
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const serviceRoleKey =
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY;
+  const { url, key: serviceRoleKey } = readSupabaseCredentials();
   if (!url || !serviceRoleKey) {
     throw new Error("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
   }
@@ -56,6 +45,7 @@ function getClient(): SupabaseClient {
   client = createClient(url, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+  warnIfNotServiceRoleKey(serviceRoleKey, "supabaseHistory");
   return client;
 }
 

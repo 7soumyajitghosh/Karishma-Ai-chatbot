@@ -1,8 +1,14 @@
 node_modules/
 build/
 dist/
+dist-android/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
+# .env.android holds ONE public value: VITE_API_BASE, the HTTPS URL of the
+# deployed Render backend. It is compiled into the APK, so it can never hold a
+# secret anyway -- and it must be committed, or a fresh clone builds an APK with
+# an empty API base that fails every /api request. Keys stay in Render env vars.
+!.env.android

@@ -10,8 +10,13 @@ const config: CapacitorConfig = {
   appId: 'com.karishma.ai',
   appName: 'Karishma',
 
-  // The Vite build output. `cap sync android` copies this into the APK.
-  webDir: 'dist',
+  // The Android-only Vite output (`npm run build:android`).
+  //
+  // Deliberately NOT `dist`: the web build writes the bundled Express backend to
+  // dist/server.cjs, and anything in webDir gets packaged into the APK. Pointing
+  // at dist would ship the whole server bundle -- including the inlined Firebase
+  // config -- inside the app. dist-android contains only client assets.
+  webDir: 'dist-android',
 
   server: {
     // https://localhost is required so that localStorage, IndexedDB (Firestore

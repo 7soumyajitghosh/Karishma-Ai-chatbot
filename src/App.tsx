@@ -447,14 +447,19 @@ function App() {
   });
 
   // Mandatory Authentication step state
+  //
+  // These two initializers are the app's entry gate, so they use the safe
+  // wrappers rather than raw localStorage: a throw inside a useState initializer
+  // (private mode, WebView with storage disabled) would abort the very first
+  // render and blank the whole app, not just the auth screen.
   const [authCompleted, setAuthCompleted] = useState(() => {
-    const savedUser = localStorage.getItem("mock_logged_in_user");
-    const isGuestFlag = localStorage.getItem("best_friend_is_guest") === "true";
-    const authCompletedFlag = localStorage.getItem("auth_step_completed") === "true";
+    const savedUser = safeLocalStorageGet("mock_logged_in_user");
+    const isGuestFlag = safeLocalStorageGet("best_friend_is_guest") === "true";
+    const authCompletedFlag = safeLocalStorageGet("auth_step_completed") === "true";
     return Boolean(savedUser) || isGuestFlag || authCompletedFlag;
   });
   const [isGuest, setIsGuest] = useState(() => {
-    return localStorage.getItem("best_friend_is_guest") === "true";
+    return safeLocalStorageGet("best_friend_is_guest") === "true";
   });
   const [authPopupView, setAuthPopupView] = useState<"menu" | "login" | "create" | "verify" | "forgot" | "reset_otp" | "reset_pass" | "reset_success">("menu");
 
@@ -2159,16 +2164,26 @@ function App() {
   const handleOnboardingComplete = () => {
     const nick = onboardingInput.trim();
     if (!nick) return;
-    
-    localStorage.setItem("best_friend_user_name", nick);
-    localStorage.setItem("best_friend_nickname", nick);
-    localStorage.setItem("onboarding_completed", "true");
+
+    safeLocalStorageSet("best_friend_user_name", nick);
+    safeLocalStorageSet("best_friend_nickname", nick);
+    safeLocalStorageSet("onboarding_completed", "true");
     setUserName(nick);
     setUserNickname(nick);
     setOnboardingCompleted(true);
-    setAuthCompleted(false);
-    setAuthPopupView("menu");
-    
+
+    // Only send a BRAND-NEW visitor on to the Log In / Create Account / Guest
+    // chooser. Forcing the auth gate shut unconditionally is what caused the
+    // "Guest Mode -> Continue -> back to the login page" bug: wipeAllData()
+    // clears `onboarding_completed` and re-shows this nickname screen while an
+    // active guest session (or a signed-in user) is still live, so submitting a
+    // name here used to kick that established session back to the login
+    // chooser. A user who already has an identity keeps it.
+    if (!loggedInUser && !isGuest) {
+      setAuthCompleted(false);
+      setAuthPopupView("menu");
+    }
+
     // Only set the initial greeting if there's no real history loaded
     const hasRealHistory = messages.length > 0;
     if (!hasRealHistory) {
@@ -2276,30 +2291,36 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
-                  localStorage.removeItem("mock_logged_in_user");
+                  // React state is set BEFORE any storage call. localStorage
+                  // throws in private mode, when a WebView has storage
+                  // disabled, or on quota exhaustion -- and a raw throw here
+                  // used to abort this handler after setLoggedInUser(null) but
+                  // before setAuthCompleted(true), stranding the user on this
+                  // very screen. State first, then best-effort persistence via
+                  // the file's own safe wrappers, means the tap always works.
+                  const guestName =
+                    (userName ||
+                      safeLocalStorageGet("best_friend_user_name") ||
+                      safeLocalStorageGet("best_friend_nickname") ||
+                      "").trim() || "Guest";
+
                   setLoggedInUser(null);
-
-                  localStorage.setItem("best_friend_is_guest", "true");
-                  localStorage.setItem("auth_step_completed", "true");
-                  localStorage.setItem("onboarding_completed", "true");
-
                   setIsGuest(true);
                   setAuthCompleted(true);
                   setOnboardingCompleted(true);
-
-                  let name = userName || localStorage.getItem("best_friend_user_name") || localStorage.getItem("best_friend_nickname");
-                  if (!name || !name.trim()) {
-                    name = "Guest";
-                  }
-                  setUserName(name);
-                  setUserNickname(name);
-                  localStorage.setItem("best_friend_user_name", name);
-                  localStorage.setItem("best_friend_nickname", name);
-
+                  setUserName(guestName);
+                  setUserNickname(guestName);
                   setChatHistoryList([]);
                   setMessages([]);
                   setCurrentChatId(crypto.randomUUID());
                   setAuthError("");
+
+                  safeLocalStorageRemove("mock_logged_in_user");
+                  safeLocalStorageSet("best_friend_is_guest", "true");
+                  safeLocalStorageSet("auth_step_completed", "true");
+                  safeLocalStorageSet("onboarding_completed", "true");
+                  safeLocalStorageSet("best_friend_user_name", guestName);
+                  safeLocalStorageSet("best_friend_nickname", guestName);
                 }}
                 className="w-full p-4 bg-white hover:bg-[#FAF8F5] border border-[#DFD9D0] hover:border-[#8C857E] rounded-2xl transition-all cursor-pointer flex items-center gap-4 text-left group mt-1"
               >

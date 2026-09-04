@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Karishma AI</string>
+    <string name="tagline">Your emotionally intelligent AI companion</string>
+    <string name="chat_hint">Ask me anything, express thoughts, or upload files...</string>
+    <string name="new_chat">New Chat</string>
+    <string name="chat_history">Chat History</string>
+    <string name="settings">Settings &amp; Security</string>
+    <string name="account">Account</string>
+    <string name="guest_mode">Guest Mode</string>
+    <string name="self_healing">Self-Healing Diagnostics</string>
+    <string name="send">Send</string>
+    <string name="copy">Copy</string>
+    <string name="speak">Narrate</string>
+    <string name="stop_speech">Stop</string>
+    <string name="regenerate">Regenerate</string>
+</resources>

@@ -9,9 +9,10 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "build:android": "vite build --mode android",
+    "build:android": "vite build --mode android --outDir dist-android --emptyOutDir",
     "sync:android": "npm run build:android && cap sync android",
-    "open:android": "cap open android"
+    "open:android": "cap open android",
+    "apk:debug": "npm run sync:android && cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
