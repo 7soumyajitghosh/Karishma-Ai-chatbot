@@ -342,32 +342,27 @@ function App() {
   const [retentionPolicy, setRetentionPolicy] = useState<"session" | "local">("local");
   const [dataSharing, setDataSharing] = useState(false);
 
-  // Custom API Keys State
-  const [customGeminiKey, setCustomGeminiKey] = useState<string>(() => localStorage.getItem("custom_gemini_api_key") || "");
-  const [customOpenRouterKey, setCustomOpenRouterKey] = useState<string>(() => localStorage.getItem("custom_openrouter_api_key") || "");
-  const [apiKeySaveStatus, setApiKeySaveStatus] = useState<string | null>(null);
-
-  const handleSaveApiKeys = () => {
-    localStorage.setItem("custom_gemini_api_key", customGeminiKey.trim());
-    localStorage.setItem("custom_openrouter_api_key", customOpenRouterKey.trim());
-    setApiKeySaveStatus("API Keys saved successfully!");
-    setTimeout(() => setApiKeySaveStatus(null), 3000);
-  };
-
-  const handleClearApiKeys = () => {
-    setCustomGeminiKey("");
-    setCustomOpenRouterKey("");
-    localStorage.removeItem("custom_gemini_api_key");
-    localStorage.removeItem("custom_openrouter_api_key");
-    setApiKeySaveStatus("Custom API Keys cleared.");
-    setTimeout(() => setApiKeySaveStatus(null), 3000);
-  };
+  // AI Provider Status — keys live in the backend environment, never in the
+  // browser. /api/health reports booleans only, never key material.
+  const [providerStatus, setProviderStatus] = useState<{ glm?: boolean; gemini?: boolean; openrouter?: boolean } | null>(null);
 
   // UI States
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // Fetch server-side provider configuration status (booleans only) the first
+  // time the Settings panel opens.
+  useEffect(() => {
+    if (!showSettings || providerStatus) return;
+    fetch("/api/health")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.configured) setProviderStatus(data.configured);
+      })
+      .catch(() => {});
+  }, [showSettings, providerStatus]);
   const [showModelSwitcher, setShowModelSwitcher] = useState(false);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
@@ -4665,79 +4660,39 @@ function App() {
               
               <div className="flex-1 overflow-y-auto p-5 space-y-8">
                 
-                {/* CATEGORY: AI Provider API Keys */}
+                {/* CATEGORY: AI Provider Status */}
                 <div className="space-y-4">
                   <h3 className="text-xs font-bold text-[#8C857E] uppercase tracking-wider mb-2 flex items-center gap-2">
                     <Key className="w-3.5 h-3.5 text-[#D96B43]" />
-                    AI Provider API Keys
+                    AI Provider Status
                   </h3>
-                  
-                  <div className="bg-white border border-[#EBE6DD] rounded-2xl p-4 shadow-sm space-y-4">
+
+                  <div className="bg-white border border-[#EBE6DD] rounded-2xl p-4 shadow-sm space-y-3">
                     <p className="text-xs text-[#8C857E] leading-relaxed">
-                      Configure your own custom API key below. Keys are saved locally in your browser and used for your requests.
+                      Karishma connects to its AI providers through securely configured server keys. No API key entry is needed — chat works out of the box.
                     </p>
 
-                    {/* Google Gemini API Key Input */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-xs font-bold text-[#2C2A29]">
-                          Google Gemini API Key
-                        </label>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${customGeminiKey ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-gray-100 text-gray-500"}`}>
-                          {customGeminiKey ? "Custom Active" : "Server Env Key"}
-                        </span>
-                      </div>
-                      <input
-                        type="password"
-                        placeholder="AIzaSy..."
-                        value={customGeminiKey}
-                        onChange={(e) => setCustomGeminiKey(e.target.value)}
-                        className="w-full text-xs p-2.5 rounded-xl border border-[#EBE6DD] bg-[#FAF8F5] focus:bg-white focus:outline-none focus:border-[#D96B43] text-[#2C2A29] transition-all font-mono"
-                      />
-                    </div>
-
-                    {/* OpenRouter API Key Input */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-xs font-bold text-[#2C2A29]">
-                          OpenRouter API Key
-                        </label>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${customOpenRouterKey ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-gray-100 text-gray-500"}`}>
-                          {customOpenRouterKey ? "Custom Active" : "Server Env Key"}
-                        </span>
-                      </div>
-                      <input
-                        type="password"
-                        placeholder="sk-or-v1-..."
-                        value={customOpenRouterKey}
-                        onChange={(e) => setCustomOpenRouterKey(e.target.value)}
-                        className="w-full text-xs p-2.5 rounded-xl border border-[#EBE6DD] bg-[#FAF8F5] focus:bg-white focus:outline-none focus:border-[#D96B43] text-[#2C2A29] transition-all font-mono"
-                      />
-                    </div>
-
-                    {apiKeySaveStatus && (
-                      <p className="text-xs text-emerald-600 font-semibold text-center flex items-center justify-center gap-1">
-                        <Check className="w-3.5 h-3.5" /> {apiKeySaveStatus}
-                      </p>
-                    )}
-
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        onClick={handleSaveApiKeys}
-                        className="flex-1 bg-[#D96B43] hover:bg-[#c05933] text-white text-xs font-bold py-2.5 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        Save Keys
-                      </button>
-                      {(customGeminiKey || customOpenRouterKey) && (
-                        <button
-                          onClick={handleClearApiKeys}
-                          className="bg-white border border-[#EBE6DD] hover:bg-rose-50 hover:border-rose-200 text-rose-600 text-xs font-bold py-2.5 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
+                    {[
+                      { id: "glm", label: "GLM" },
+                      { id: "gemini", label: "Google Gemini" },
+                      { id: "openrouter", label: "OpenRouter" },
+                    ].map((p) => {
+                      const configured = providerStatus ? Boolean((providerStatus as Record<string, boolean | undefined>)[p.id]) : null;
+                      return (
+                        <div key={p.id} className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[#2C2A29]">{p.label}</span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            configured === null
+                              ? "bg-gray-100 text-gray-500"
+                              : configured
+                              ? "bg-emerald-50 text-emerald-600 border border-emerald-200"
+                              : "bg-amber-50 text-amber-600 border border-amber-200"
+                          }`}>
+                            {configured === null ? "Checking…" : configured ? "Server configured" : "Not configured"}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

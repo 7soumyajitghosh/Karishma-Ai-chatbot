@@ -62,6 +62,11 @@ services:
       - key: GEMINI_API_KEY
         sync: false
 
+      # Optional primary chat provider (GLM via Z.ai). When set, GLM is tried
+      # first and OpenRouter/Gemini become fallbacks. Server-side only.
+      - key: GLM_API_KEY
+        sync: false
+
       # --- OTP email (Brevo) ----------------------------------------------
       - key: BREVO_API_KEY
         sync: false

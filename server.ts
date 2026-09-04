@@ -147,6 +147,7 @@ function sanitizeSecrets(text: string): string {
   const sensitiveKeys = [
     process.env.GEMINI_API_KEY,
     process.env.OPENROUTER_API_KEY,
+    process.env.GLM_API_KEY,
     process.env.POLLINATIONS_API_KEY,
     process.env.POLLINATIONS_KEY,
     process.env.FIREBASE_PRIVATE_KEY,
@@ -644,6 +645,30 @@ if (apiKey) {
   console.warn("WARNING: OPENROUTER_API_KEY environment variable is missing.");
 }
 
+// GLM (Z.ai / Zhipu) — primary chat provider when GLM_API_KEY is configured.
+// Server-side only: the key is read from the backend environment and is never
+// sent to the browser. Uses the OpenAI-compatible chat completions endpoint.
+const GLM_API_KEY = process.env.GLM_API_KEY;
+const GLM_BASE_URL = (process.env.GLM_BASE_URL || "https://api.z.ai/api/paas/v4").replace(/\/+$/, "");
+const GLM_MODEL = (process.env.GLM_MODEL || "glm-4.6").trim();
+let glmClient: OpenAI | null = null;
+if (GLM_API_KEY) {
+  try {
+    glmClient = new OpenAI({
+      apiKey: GLM_API_KEY,
+      baseURL: GLM_BASE_URL,
+      defaultHeaders: {
+        "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+        "X-Title": "Karishma AI Friend",
+      },
+    });
+    console.log(`[GLM] Primary chat provider enabled (model: ${GLM_MODEL}).`);
+  } catch (glmInitErr) {
+    console.warn("Failed to initialize GLM client:", glmInitErr);
+    glmClient = null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CORS for the Android (Capacitor) shell only.
 //
@@ -850,6 +875,7 @@ app.get("/api/health", (req, res) => {
     configured: {
       supabase: isOtpStoreDurable(),
       brevo: Boolean(process.env.BREVO_API_KEY),
+      glm: Boolean(process.env.GLM_API_KEY),
       openrouter: Boolean(process.env.OPENROUTER_API_KEY),
       gemini: Boolean(process.env.GEMINI_API_KEY),
     },
@@ -2319,6 +2345,48 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
 
     const isGeminiRequested = Boolean(model && (model.startsWith("google/") || model.includes("gemini")));
 
+    // 0. Primary provider: GLM (server-side only, when GLM_API_KEY is configured).
+    // Skipped when the user explicitly picked a Gemini model (their selection
+    // drives the Gemini path below) or when the message carries an image
+    // attachment (vision routing stays with the existing providers).
+    if (glmClient && !isGeminiRequested) {
+      const glmHasImage = attachment && attachment.dataUrl && (
+        attachment.isImage ||
+        (attachment.type && attachment.type.startsWith("image/")) ||
+        attachment.dataUrl.startsWith("data:image/")
+      );
+
+      if (!glmHasImage) {
+        try {
+          const response = await retryApiCall(
+            `GLM Chat (${GLM_MODEL})`,
+            async () => {
+              return await glmClient!.chat.completions.create({
+                model: GLM_MODEL,
+                messages: [
+                  { role: "system", content: systemInstruction },
+                  ...formattedHistory,
+                ] as any,
+                temperature: 0.85,
+                max_tokens: 1000,
+              });
+            },
+            { maxRetries: 1, initialDelayMs: 400, timeoutMs: 15000 }
+          );
+
+          const glmContent = response?.choices?.[0]?.message?.content || "";
+          if (glmContent) {
+            textResponse = glmContent;
+          }
+        } catch (glmError: any) {
+          console.warn(
+            "GLM primary attempt failed, continuing with fallback providers:",
+            sanitizeSecrets(glmError?.message || String(glmError)).slice(0, 160)
+          );
+        }
+      }
+    }
+
     // 1. Primary provider selection: If non-Gemini model (e.g. Nemotron/Llama/GPT) is requested, try OpenRouter first
     if (!isGeminiRequested && activeOpenRouterClient) {
       const isImage = attachment && attachment.dataUrl && (
@@ -2460,7 +2528,7 @@ function getOpenRouterCandidateModels(modelRequested?: string, isImageAttachment
     }
 
     if (!textResponse) {
-      textResponse = "I'm sorry, but AI providers (Gemini/OpenRouter) are not configured correctly or are out of credits. Please configure your API key in Settings or set GEMINI_API_KEY in your environment.";
+      textResponse = "I'm having trouble reaching my AI providers right now. This is usually temporary — a rate limit or provider outage. Please try again in a moment.";
     }
     
     return res.json({
@@ -2491,7 +2559,7 @@ app.post("/api/generate-image", async (req, res) => {
 
     const imageUrl = await generateImageWithGemini(prompt.trim(), undefined, undefined, activeKeys.clientGemini);
     if (!imageUrl) {
-      return res.status(500).json({ error: "Failed to generate image. Please ensure a valid Gemini API key is configured in Settings or .env." });
+      return res.status(500).json({ error: "Failed to generate image. The image service is temporarily unavailable. Please try again later." });
     }
 
     return res.json({
