@@ -6,6 +6,22 @@ This changelog records all meaningful modifications made by AI agents working on
 
 ## 2026-09-04
 
+Agent/Task: Fix Browser White-Screen Crash (Firebase Auth Invalid API Key)
+Files Modified:
+- `src/lib/firebase.ts`
+What Changed:
+Wrapped `getAuth(app)` in a safe initialization helper `createAuthSafely()` that returns `null` when `apiKey` is empty or unconfigured. Guarded `ensureFirebaseAuth()` and `handleFirestoreError()` against `null` auth references.
+Why:
+When `apiKey: ""` was set in `firebase-applet-config.json`, evaluating `getAuth(app)` at module scope threw an uncaught `Firebase: Error (auth/invalid-api-key)` exception during bundle execution in the browser. This halted script execution before React mounted into `<div id="root"></div>`, producing a completely blank white screen.
+Problem Solved:
+Completely eliminated the browser white screen. The React chat application now loads, mounts, and renders immediately.
+Verification:
+Tested `npm run build` and verified the new production bundle (`index-BduTomBB.js`) is served cleanly on `http://localhost:3000` with HTTP 200.
+
+---
+
+## 2026-09-04
+
 Agent/Task: Initialize AI_CHANGELOG Documentation System
 Files Modified:
 - `AI_CHANGELOG/ROADMAP.md`

@@ -22,10 +22,8 @@ This document reflects the actual verified state of the Karishma AI repository a
 
 ## Current Known Issues
 
-### 1. Browser Console Error: `Firebase: Error (auth/invalid-api-key)`
-- **Symptom**: The browser console logs an unhandled Firebase authentication error `auth/invalid-api-key`.
-- **Root Cause**: To protect sensitive credentials from exposure, `"apiKey": ""` was emptied in `firebase-applet-config.json`. In `src/lib/firebase.ts`, `getAuth(app)` and anonymous auth helpers are executed at initialization time. Without a valid API key, the Firebase Auth client throws this error.
-- **Impact**: While local and guest mode continue functioning via `localStorage` and Express API routes, this error clutters the console and can interfere with client-side Firestore synchronization.
+### 1. Browser Console Error: `Firebase: Error (auth/invalid-api-key)` [RESOLVED]
+- **Status**: Fixed in `src/lib/firebase.ts`. `createAuthSafely()` guards `getAuth()` when `apiKey` is empty, preventing top-level module throws. The React application now renders cleanly.
 
 ### 2. Supabase `public.auth_otps` Table Missing / Schema Cache Error
 - **Symptom**: Server startup logs:

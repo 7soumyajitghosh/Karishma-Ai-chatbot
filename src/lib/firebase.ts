@@ -55,7 +55,19 @@ function createFirestoreInstance() {
 }
 
 export const db = createFirestoreInstance();
-export const auth = getAuth(app);
+
+function createAuthSafely() {
+  try {
+    if (!resolvedFirebaseConfig.apiKey) {
+      return null;
+    }
+    return getAuth(app);
+  } catch {
+    return null;
+  }
+}
+
+export const auth = createAuthSafely();
 
 // Error Handling according to Firebase Skill standard
 export enum OperationType {
@@ -88,12 +100,12 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+      userId: auth?.currentUser?.uid || null,
+      email: auth?.currentUser?.email || null,
+      emailVerified: auth?.currentUser?.emailVerified || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || null,
+      tenantId: auth?.currentUser?.tenantId || null,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
         providerId: provider.providerId,
         email: provider.email,
       })) || []
@@ -109,6 +121,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 let authPromise: Promise<any> | null = null;
 
 export const ensureFirebaseAuth = async () => {
+  if (!auth) return null;
   if (auth.currentUser) return auth.currentUser;
   if (!authPromise) {
     authPromise = signInAnonymously(auth)
