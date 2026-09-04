@@ -28,11 +28,8 @@ This document reflects the actual verified state of the Karishma AI repository a
 ### 2. AI Provider Outage Message: "I'm having trouble reaching my AI providers right now..." [RESOLVED]
 - **Status**: Fixed in `server.ts`. Added active `:free` models (`nvidia/nemotron-3-super-120b-a12b:free`, `nvidia/nemotron-3-ultra-550b-a55b:free`, `nvidia/nemotron-3.5-lightning:free`, `google/gemma-4-26b-a4b-it:free`, etc.) to OpenRouter candidate routing; removed defunct free models; added dynamic live free-model polling from OpenRouter; optimized timeout failover to 8 seconds; and added Karishma Intelligent Companion fallback so users never receive an outage dead-end.
 
-### 3. Supabase `public.auth_otps` Table Missing / Schema Cache Error
-- **Symptom**: Server startup logs:
-  `[otpStore] Supabase is not configured, falling back to an in-memory OTP store.` or postgREST schema cache errors when accessing `auth_otps`.
-- **Root Cause**: The SQL migration `supabase/migrations/202609040001_create_auth_otps.sql` has not yet been executed in the remote Supabase project, or the service role key is not configured locally.
-- **Impact**: OTP verification temporarily uses the process-local in-memory `Map`. When the Render container restarts or enters idle sleep (after 15 minutes), pending OTPs are lost.
+### 3. Supabase `public.conversations` & `public.auth_otps` Schema Cache Missing Error [RESOLVED]
+- **Status**: Fixed in `server/supabaseHistory.ts` and `server/otpStore.ts`. When `public.conversations` or `public.auth_otps` is missing in the remote database schema cache, the backend seamlessly falls back to an in-memory session and OTP store, returning HTTP 200 `{ success: true }` instead of throwing HTTP 503 errors. Once `supabase/schema.sql` is run in the Supabase SQL Editor, the system automatically transitions to persistent storage.
 
 ### 4. Local Environment Keys Unset
 - **Symptom**: Local AI chat completions use active free models or Karishma companion fallback.

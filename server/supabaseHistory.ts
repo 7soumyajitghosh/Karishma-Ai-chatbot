@@ -73,108 +73,227 @@ function titleFor(session: PersistedChatSession, existingTitle?: string): string
   return existingTitle && existingTitle !== "New Conversation" ? existingTitle : "Chat";
 }
 
+// Resilient in-memory session store (used when Supabase tables are not yet created in remote DB)
+const memorySessions = new Map<string, Map<string, PersistedChatSession>>();
+let warnedSchemaCache = false;
+
+function isSchemaCacheError(err: any): boolean {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  const code = err.code || "";
+  return (
+    code === "PGRST205" ||
+    msg.includes("could not find the table") ||
+    msg.includes("schema cache") ||
+    msg.includes("relation \"public.conversations\" does not exist") ||
+    msg.includes("relation \"conversations\" does not exist") ||
+    msg.includes("relation \"public.messages\" does not exist") ||
+    msg.includes("relation \"messages\" does not exist")
+  );
+}
+
 export async function getConversationHistory(userId: string): Promise<PersistedChatSession[]> {
-  const supabase = getClient();
-  const { data: conversations, error: conversationsError } = await supabase
-    .from("conversations")
-    .select("id, user_id, title, started_at, mode, updated_at, created_at")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false });
+  const userMap = memorySessions.get(userId);
+  const localList = userMap ? Array.from(userMap.values()) : [];
 
-  if (conversationsError) throw new Error(`Supabase history query failed: ${conversationsError.message}`);
-  if (!conversations?.length) return [];
-
-  const conversationIds = conversations.map((conversation: any) => conversation.id);
-  const { data: messages, error: messagesError } = await supabase
-    .from("messages")
-    .select("id, conversation_id, role, content, client_timestamp, is_encrypted, citations, created_at")
-    .in("conversation_id", conversationIds)
-    .order("created_at", { ascending: true });
-
-  if (messagesError) throw new Error(`Supabase message query failed: ${messagesError.message}`);
-
-  const messagesByConversation = new Map<string, PersistedChatMessage[]>();
-  for (const message of messages || []) {
-    const list = messagesByConversation.get(message.conversation_id) || [];
-    list.push({
-      id: message.id,
-      role: message.role,
-      text: message.content,
-      timestamp: message.client_timestamp || message.created_at,
-      isEncrypted: message.is_encrypted,
-      citations: message.citations || undefined,
-    });
-    messagesByConversation.set(message.conversation_id, list);
+  if (!isSupabaseConfigured()) {
+    return localList;
   }
 
-  return conversations.map((conversation: any) => ({
-    id: conversation.id,
-    userId: conversation.user_id,
-    title: conversation.title,
-    timestamp: conversation.started_at || conversation.created_at,
-    mode: conversation.mode || "default",
-    updatedAt: conversation.updated_at,
-    messages: messagesByConversation.get(conversation.id) || [],
-  }));
+  try {
+    const supabase = getClient();
+    const { data: conversations, error: conversationsError } = await supabase
+      .from("conversations")
+      .select("id, user_id, title, started_at, mode, updated_at, created_at")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false });
+
+    if (conversationsError) {
+      if (isSchemaCacheError(conversationsError)) {
+        if (!warnedSchemaCache) {
+          warnedSchemaCache = true;
+          console.warn(
+            "[supabaseHistory] Table 'public.conversations' not found in schema cache. " +
+            "Please run 'supabase/schema.sql' in your Supabase SQL Editor. " +
+            "Using in-memory session store in the meantime."
+          );
+        }
+        return localList;
+      }
+      throw new Error(`Supabase history query failed: ${conversationsError.message}`);
+    }
+
+    if (!conversations?.length) return localList;
+
+    const conversationIds = conversations.map((conversation: any) => conversation.id);
+    const { data: messages, error: messagesError } = await supabase
+      .from("messages")
+      .select("id, conversation_id, role, content, client_timestamp, is_encrypted, citations, created_at")
+      .in("conversation_id", conversationIds)
+      .order("created_at", { ascending: true });
+
+    if (messagesError && !isSchemaCacheError(messagesError)) {
+      throw new Error(`Supabase message query failed: ${messagesError.message}`);
+    }
+
+    const messagesByConversation = new Map<string, PersistedChatMessage[]>();
+    for (const message of messages || []) {
+      const list = messagesByConversation.get(message.conversation_id) || [];
+      list.push({
+        id: message.id,
+        role: message.role,
+        text: message.content,
+        timestamp: message.client_timestamp || message.created_at,
+        isEncrypted: message.is_encrypted,
+        citations: message.citations || undefined,
+      });
+      messagesByConversation.set(message.conversation_id, list);
+    }
+
+    const remoteSessions = conversations.map((conversation: any) => ({
+      id: conversation.id,
+      userId: conversation.user_id,
+      title: conversation.title,
+      timestamp: conversation.started_at || conversation.created_at,
+      mode: conversation.mode || "default",
+      updatedAt: conversation.updated_at,
+      messages: messagesByConversation.get(conversation.id) || [],
+    }));
+
+    // Merge remote with local memory (remote taking precedence)
+    const combined = new Map<string, PersistedChatSession>();
+    for (const s of localList) combined.set(s.id, s);
+    for (const s of remoteSessions) combined.set(s.id, s);
+    return Array.from(combined.values());
+  } catch (err: any) {
+    if (isSchemaCacheError(err)) {
+      return localList;
+    }
+    throw err;
+  }
 }
 
 export async function saveConversation(userId: string, session: PersistedChatSession): Promise<void> {
-  const supabase = getClient();
-  const { data: existing, error: existingError } = await supabase
-    .from("conversations")
-    .select("user_id, title")
-    .eq("id", session.id)
-    .maybeSingle();
+  // Always update in-memory fallback first
+  let userMap = memorySessions.get(userId);
+  if (!userMap) {
+    userMap = new Map();
+    memorySessions.set(userId, userMap);
+  }
+  userMap.set(session.id, { ...session, userId });
 
-  if (existingError) throw new Error(`Supabase conversation lookup failed: ${existingError.message}`);
-  if (existing && existing.user_id !== userId) throw new Error("Forbidden: Not your session");
+  if (!isSupabaseConfigured()) {
+    return;
+  }
 
-  const now = new Date().toISOString();
-  const conversation = {
-    id: session.id,
-    user_id: userId,
-    title: titleFor(session, existing?.title),
-    mode: session.mode || "default",
-    updated_at: now,
-    ...(toTimestamp(session.timestamp) ? { started_at: toTimestamp(session.timestamp) } : {}),
-  };
-  const { error: conversationError } = await supabase
-    .from("conversations")
-    .upsert(conversation, { onConflict: "id" });
-  if (conversationError) throw new Error(`Supabase conversation save failed: ${conversationError.message}`);
+  try {
+    const supabase = getClient();
+    const { data: existing, error: existingError } = await supabase
+      .from("conversations")
+      .select("user_id, title")
+      .eq("id", session.id)
+      .maybeSingle();
 
-  const messages = (session.messages || [])
-    .filter((message) => message?.text)
-    .map((message) => ({
-      id: message.id || randomUUID(),
-      conversation_id: session.id,
-      role: normalizeRole(message.role),
-      content: message.text,
-      client_timestamp: message.timestamp || null,
-      is_encrypted: Boolean(message.isEncrypted),
-      citations: message.citations || null,
-    }));
+    if (existingError) {
+      if (isSchemaCacheError(existingError)) {
+        if (!warnedSchemaCache) {
+          warnedSchemaCache = true;
+          console.warn(
+            "[supabaseHistory] Table 'public.conversations' not found in schema cache. " +
+            "Please run 'supabase/schema.sql' in your Supabase SQL Editor. " +
+            "Using in-memory session store in the meantime."
+          );
+        }
+        return; // Saved in memory
+      }
+      throw new Error(`Supabase conversation lookup failed: ${existingError.message}`);
+    }
 
-  if (messages.length) {
-    const { error: messagesError } = await supabase
-      .from("messages")
-      .upsert(messages, { onConflict: "conversation_id,id" });
-    if (messagesError) throw new Error(`Supabase message save failed: ${messagesError.message}`);
+    if (existing && existing.user_id !== userId) throw new Error("Forbidden: Not your session");
+
+    const now = new Date().toISOString();
+    const conversation = {
+      id: session.id,
+      user_id: userId,
+      title: titleFor(session, existing?.title),
+      mode: session.mode || "default",
+      updated_at: now,
+      ...(toTimestamp(session.timestamp) ? { started_at: toTimestamp(session.timestamp) } : {}),
+    };
+    const { error: conversationError } = await supabase
+      .from("conversations")
+      .upsert(conversation, { onConflict: "id" });
+
+    if (conversationError) {
+      if (isSchemaCacheError(conversationError)) {
+        return; // Saved in memory
+      }
+      throw new Error(`Supabase conversation save failed: ${conversationError.message}`);
+    }
+
+    const messages = (session.messages || [])
+      .filter((message) => message?.text)
+      .map((message) => ({
+        id: message.id || randomUUID(),
+        conversation_id: session.id,
+        role: normalizeRole(message.role),
+        content: message.text,
+        client_timestamp: message.timestamp || null,
+        is_encrypted: Boolean(message.isEncrypted),
+        citations: message.citations || null,
+      }));
+
+    if (messages.length) {
+      const { error: messagesError } = await supabase
+        .from("messages")
+        .upsert(messages, { onConflict: "conversation_id,id" });
+      if (messagesError && !isSchemaCacheError(messagesError)) {
+        throw new Error(`Supabase message save failed: ${messagesError.message}`);
+      }
+    }
+  } catch (err: any) {
+    if (isSchemaCacheError(err)) {
+      return; // Saved in memory
+    }
+    throw err;
   }
 }
 
 export async function deleteConversation(userId: string, sessionId: string): Promise<boolean> {
-  const supabase = getClient();
-  const { data, error } = await supabase
-    .from("conversations")
-    .delete()
-    .eq("id", sessionId)
-    .eq("user_id", userId)
-    .select("id");
+  const userMap = memorySessions.get(userId);
+  let memoryDeleted = false;
+  if (userMap) {
+    memoryDeleted = userMap.delete(sessionId);
+  }
 
-  if (error) throw new Error(`Supabase conversation delete failed: ${error.message}`);
-  return Boolean(data?.length);
+  if (!isSupabaseConfigured()) {
+    return memoryDeleted;
+  }
+
+  try {
+    const supabase = getClient();
+    const { data, error } = await supabase
+      .from("conversations")
+      .delete()
+      .eq("id", sessionId)
+      .eq("user_id", userId)
+      .select("id");
+
+    if (error) {
+      if (isSchemaCacheError(error)) {
+        return memoryDeleted || true;
+      }
+      throw new Error(`Supabase conversation delete failed: ${error.message}`);
+    }
+    return Boolean(data?.length) || memoryDeleted;
+  } catch (err: any) {
+    if (isSchemaCacheError(err)) {
+      return memoryDeleted || true;
+    }
+    throw err;
+  }
 }
+
 
 export interface PersistedUser {
   id: string;

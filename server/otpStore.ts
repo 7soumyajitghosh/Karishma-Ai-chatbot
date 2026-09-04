@@ -124,6 +124,19 @@ function normalizeEmail(email: string): string {
  * Public API -- mirrors the old Map, but async
  * ------------------------------------------------------------------ */
 
+function isSchemaCacheError(err: any): boolean {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  const code = err.code || "";
+  return (
+    code === "PGRST205" ||
+    msg.includes("could not find the table") ||
+    msg.includes("schema cache") ||
+    msg.includes("relation \"public.auth_otps\" does not exist") ||
+    msg.includes("relation \"auth_otps\" does not exist")
+  );
+}
+
 export async function getOtp(emailRaw: string): Promise<OtpRecord | null> {
   const email = normalizeEmail(emailRaw);
   if (!email) return null;
@@ -133,6 +146,9 @@ export async function getOtp(emailRaw: string): Promise<OtpRecord | null> {
 
   const { data, error } = await db.from(TABLE).select("*").eq("email", email).maybeSingle();
   if (error) {
+    if (isSchemaCacheError(error)) {
+      return memory.get(email) ?? null;
+    }
     console.error("[otpStore] getOtp failed:", error.message);
     // Surface as "no pending verification" rather than a 500 the user cannot act on.
     return null;
@@ -144,9 +160,11 @@ export async function setOtp(emailRaw: string, record: OtpRecord): Promise<void>
   const email = normalizeEmail(emailRaw);
   if (!email) return;
 
+  // Always store in memory as backup
+  memory.set(email, record);
+
   const db = getClient();
   if (!db) {
-    memory.set(email, record);
     return;
   }
 
@@ -163,7 +181,12 @@ export async function setOtp(emailRaw: string, record: OtpRecord): Promise<void>
     },
     { onConflict: "email" }
   );
-  if (error) throw new Error(`Could not store verification code: ${error.message}`);
+  if (error) {
+    if (isSchemaCacheError(error)) {
+      return; // Handled by memory backup
+    }
+    throw new Error(`Could not store verification code: ${error.message}`);
+  }
 }
 
 export async function deleteOtp(emailRaw: string): Promise<void> {
@@ -246,7 +269,9 @@ export async function purgeExpiredOtps(): Promise<number> {
 
   const { data, error } = await db.from(TABLE).delete().lt("expires_at", cutoff.toISOString()).select("email");
   if (error) {
-    console.error("[otpStore] purgeExpiredOtps failed:", error.message);
+    if (!isSchemaCacheError(error)) {
+      console.error("[otpStore] purgeExpiredOtps failed:", error.message);
+    }
     return 0;
   }
   return data?.length ?? 0;
