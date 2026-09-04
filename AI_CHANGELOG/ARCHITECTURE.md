@@ -97,7 +97,7 @@ When a user sends a prompt to `/api/chat`:
 ### 9. APK / Mobile Connection
 - Built using Capacitor 8 (`capacitor.config.ts`).
 - Android source directory located in `android/`.
-- Reads `VITE_API_BASE` from `.env.android` (`https://karishma-ai.onrender.com`) at build time.
+- Reads `VITE_API_BASE` from `.env.android` (`https://karishma-ai-chatbot.onrender.com`) at build time.
 - WebView executes the React application and routes all `/api/*` network requests to the production Render host.
 
 ---

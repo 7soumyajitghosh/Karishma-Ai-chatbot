@@ -86,7 +86,7 @@ services:
       # Sent to OpenRouter as the HTTP-Referer header, nothing more. If Render
       # assigns a different subdomain than karishma-ai, update this to match.
       - key: APP_URL
-        value: https://karishma-ai.onrender.com
+        value: https://karishma-ai-chatbot.onrender.com
 
       # Image generation. Leave unset to use the keyless Pollinations tier.
       - key: POLLINATIONS_API_KEY

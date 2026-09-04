@@ -72,7 +72,7 @@ Karishma Backend
 
 ### 7. APK / Android
 - [x] ✅ **Capacitor 8 Configuration** (`capacitor.config.ts`): App ID `com.karishma.ai` targeting the `android/` project.
-- [x] ✅ **Dynamic Backend URL**: `.env.android` sets `VITE_API_BASE=https://karishma-ai.onrender.com` so the APK connects to the deployed Render backend.
+- [x] ✅ **Dynamic Backend URL**: `.env.android` sets `VITE_API_BASE=https://karishma-ai-chatbot.onrender.com` so the APK connects to the deployed Render backend.
 - [x] ✅ **Capacitor Native Plugins**: App, Status Bar, Keyboard, and Toast plugins integrated.
 - [ ] ⬜ **Final APK Compilation & Verification**: Assemble and test debug APK (`npm run apk:debug`) against the deployed production backend.
 
