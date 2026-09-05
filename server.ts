@@ -2123,7 +2123,7 @@ app.post("/api/chat", async (req, res) => {
     if (!attachment && latestUserMsg) {
       const detectedPrompt = detectImagePrompt(latestUserMsg);
       if (detectedPrompt) {
-        console.log(`[Image Generation Request]: "${detectedPrompt}"`);
+        console.log("[Image Generation Request] Processing detected drawing prompt");
         const generatedUrl = await generateImageWithGemini(detectedPrompt, undefined, undefined, activeGeminiClient);
         if (generatedUrl) {
           return res.json({
