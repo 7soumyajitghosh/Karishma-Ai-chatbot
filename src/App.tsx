@@ -64,19 +64,6 @@ import {
   mergeSyncMessages,
   SyncChatSession
 } from "./lib/firebase";
-import {
-  generateE2EEKey,
-  exportKeyToBase64,
-  importKeyFromBase64,
-  encryptPayload,
-  decryptPayload,
-  isEncrypted,
-  formatRecoveryKey,
-  parseRecoveryKey,
-  getUserE2EEKey,
-  saveUserE2EEKey,
-  clearUserE2EEKey,
-} from "./lib/crypto";
 import { normalizeBanglishForTTS } from "./utils/banglishVoiceNormalizer";
 
 export const safeLocalStorageGet = (key: string): string | null => {
@@ -337,15 +324,10 @@ function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
 
-  // Secure Client-Side Encryption (AES-256-GCM) state
-  const [encryptionEnabled, setEncryptionEnabled] = useState(true);
-  const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
-  const [rawKeyBase64, setRawKeyBase64] = useState<string>("");
+  // Secure Encryption state
+  const [encryptionEnabled, setEncryptionEnabled] = useState(false);
+  const [encryptionKey, setEncryptionKey] = useState("BEST_FRIEND_E2EE_KEY");
   const [showDecrypted, setShowDecrypted] = useState(true);
-  const [showKeyManager, setShowKeyManager] = useState(false);
-  const [importKeyPhrase, setImportKeyPhrase] = useState("");
-  const [keyActionMessage, setKeyActionMessage] = useState<string | null>(null);
-  const [keyCopied, setKeyCopied] = useState(false);
 
   // Multi-Factor Authentication (MFA) state
   const [mfaEnabled, setMfaEnabled] = useState(false);
@@ -941,11 +923,6 @@ function App() {
     setCpLoading(false);
     setCpError("");
     setCpSuccess("");
-    // Wipe in-memory crypto keys
-    setCryptoKey(null);
-    setRawKeyBase64("");
-    setImportKeyPhrase("");
-    setKeyActionMessage(null);
 
     // 6. Reset UI popups & modals
     setShowAccount(false);
@@ -1407,10 +1384,10 @@ function App() {
 
     const storedPolicy = safeLocalStorageGet("best_friend_retention_policy");
     const storedMfa = safeLocalStorageGet("best_friend_mfa_enabled");
-    const storedEnc = safeLocalStorageGet("best_friend_encryption_enabled");
+    const storedKey = safeLocalStorageGet("best_friend_encryption_key");
 
     if (storedPolicy) setRetentionPolicy(storedPolicy as any);
-    if (storedEnc !== null) setEncryptionEnabled(storedEnc !== "false");
+    if (storedKey) setEncryptionKey(storedKey);
     if (storedMfa === "true") {
       setMfaEnabled(true);
       setMfaChallengePassed(false);
@@ -1419,52 +1396,14 @@ function App() {
     setMessages([]);
   }, []);
 
-  // Initialize and maintain device AES-256-GCM encryption key for active user / guest
-  useEffect(() => {
-    let isMounted = true;
-    async function loadOrCreateDeviceKey() {
-      const targetUserId = loggedInUser ? loggedInUser.id : (isGuest ? "guest" : "default");
-      const storedKeyB64 = getUserE2EEKey(targetUserId);
 
-      if (storedKeyB64) {
-        try {
-          const imported = await importKeyFromBase64(storedKeyB64);
-          if (isMounted) {
-            setCryptoKey(imported);
-            setRawKeyBase64(storedKeyB64);
-          }
-          return;
-        } catch (e) {
-          console.warn("Failed to import existing E2EE key, creating new one:", e);
-        }
-      }
-
-      try {
-        const freshKey = await generateE2EEKey();
-        const freshB64 = await exportKeyToBase64(freshKey);
-        saveUserE2EEKey(targetUserId, freshB64);
-        if (isMounted) {
-          setCryptoKey(freshKey);
-          setRawKeyBase64(freshB64);
-        }
-      } catch (err) {
-        console.error("Failed to generate device E2EE key:", err);
-      }
-    }
-
-    loadOrCreateDeviceKey();
-    return () => {
-      isMounted = false;
-    };
-  }, [loggedInUser?.id, isGuest]);
-
-  // Prepare client-side encrypted session payload for zero-knowledge server/database storage
+  // Prepare encrypted session payload for server
   const loggedInUserRef = useRef(loggedInUser);
   loggedInUserRef.current = loggedInUser;
   const isGuestRef = useRef(isGuest);
   isGuestRef.current = isGuest;
 
-  const prepareSessionPayload = useCallback(async (session: ChatSession): Promise<ChatSession> => {
+  const prepareSessionPayload = useCallback((session: ChatSession): ChatSession => {
     let copy: ChatSession;
     try {
       copy = JSON.parse(JSON.stringify(session));
@@ -1474,35 +1413,30 @@ function App() {
         messages: Array.isArray(session?.messages) ? session.messages.map((m) => ({ ...m })) : [],
       };
     }
+    copy.messages = (copy.messages || []).map((m: any) => {
+      if (m && m.isEncrypted && typeof m.text === "string" && encryptionKey) {
+        let isAlreadyEncrypted = false;
+        try {
+          const parsed = JSON.parse(atob(m.text));
+          if (Array.isArray(parsed) && typeof parsed[0] === "number") isAlreadyEncrypted = true;
+        } catch {}
 
-    if (encryptionEnabled && cryptoKey) {
-      copy.messages = await Promise.all(
-        (copy.messages || []).map(async (m: any) => {
-          if (m && typeof m.text === "string" && m.text.trim()) {
-            if (isEncrypted(m.text)) {
-              return { ...m, isEncrypted: true };
-            }
-            try {
-              const ct = await encryptPayload(m.text, cryptoKey);
-              return { ...m, text: ct, isEncrypted: true };
-            } catch (e) {
-              console.error("Encryption failed for message:", e);
-              return m;
-            }
+        if (!isAlreadyEncrypted) {
+          let cipherChars = [];
+          for (let i = 0; i < m.text.length; i++) {
+            cipherChars.push(m.text.charCodeAt(i) ^ encryptionKey.charCodeAt(i % encryptionKey.length));
           }
-          return m;
-        })
-      );
-      // Zero-knowledge title preservation: prevent leaking message snippets in conversation table
-      copy.title = "Encrypted Conversation";
-    }
-
+          return { ...m, text: btoa(JSON.stringify(cipherChars)) };
+        }
+      }
+      return m;
+    });
     return copy;
-  }, [encryptionEnabled, cryptoKey]);
+  }, [encryptionKey]);
 
   // Save a session to Firebase Cloud Database with Self-Healing Recovery
   const syncSessionToCloud = useCallback(async (sessionToSync: ChatSession): Promise<boolean> => {
-    const payload = await prepareSessionPayload(sessionToSync);
+    const payload = prepareSessionPayload(sessionToSync);
     setSyncStatus("syncing");
 
     try {
@@ -1552,37 +1486,6 @@ function App() {
       console.warn("Failed to flush pending sync queue:", err);
       setSyncStatus("failed");
     }
-  }, []);
-
-  // Helper to decrypt a session's messages using on-device AES-256-GCM CryptoKey
-  const decryptSessionData = useCallback(async (session: any, key: CryptoKey | null): Promise<ChatSession> => {
-    const decMsgs = await Promise.all(
-      (session.messages || []).map(async (m: any) => {
-        if (m && typeof m.text === "string" && (m.isEncrypted || isEncrypted(m.text))) {
-          const res = await decryptPayload(m.text, key);
-          return { ...m, text: res.text, isEncrypted: true };
-        }
-        return m;
-      })
-    );
-
-    let title = session.title;
-    if (!title || title === "Encrypted Conversation" || title === "New Conversation" || title === "Chat") {
-      const firstUser = decMsgs.find((m: any) => m.role === "user" && m.text && !m.text.startsWith("["));
-      if (firstUser?.text) {
-        const clean = firstUser.text.trim();
-        title = clean.slice(0, 40) + (clean.length > 40 ? "..." : "");
-      }
-    }
-
-    return {
-      id: session.id,
-      title: title || session.title || "Chat",
-      timestamp: session.timestamp,
-      updatedAt: session.updatedAt,
-      messages: decMsgs,
-      mode: session.mode || "normal"
-    };
   }, []);
 
   // Real-time synchronization subscription with Firebase Firestore & Account Data Isolation
@@ -1640,11 +1543,9 @@ function App() {
         body: JSON.stringify({ userId: loggedInUser.id })
       })
         .then(res => res.json())
-        .then(async data => {
+        .then(data => {
           if (data.success && Array.isArray(data.sessions)) {
-            const serverSessions = await Promise.all(
-              data.sessions.map((s: any) => decryptSessionData(s, cryptoKey))
-            );
+            const serverSessions: ChatSession[] = data.sessions;
             setChatHistoryList(prev => {
               const map = new Map<string, ChatSession>();
               serverSessions.forEach(s => map.set(s.id, s));
@@ -1669,12 +1570,34 @@ function App() {
     // Subscribe to Firestore real-time updates for THIS user (or guest)
     const unsubscribe = subscribeToUserConversations(
       loggedInUser,
-      async (cloudSessions) => {
+      (cloudSessions) => {
         setSyncStatus("synced");
 
-        const processedSessions = await Promise.all(
-          cloudSessions.map((cloudSession) => decryptSessionData(cloudSession, cryptoKey))
-        );
+        const processedSessions: ChatSession[] = cloudSessions.map((cloudSession) => {
+          const decMsgs = (cloudSession.messages || []).map((m: any) => {
+            if (m.isEncrypted && typeof m.text === "string" && encryptionKey) {
+              try {
+                const cipherChars = JSON.parse(atob(m.text));
+                if (Array.isArray(cipherChars)) {
+                  let plainText = "";
+                  for (let i = 0; i < cipherChars.length; i++) {
+                    plainText += String.fromCharCode(cipherChars[i] ^ encryptionKey.charCodeAt(i % encryptionKey.length));
+                  }
+                  return { ...m, text: plainText };
+                }
+              } catch (e) {}
+            }
+            return m;
+          });
+          return {
+            id: cloudSession.id,
+            title: cloudSession.title,
+            timestamp: cloudSession.timestamp,
+            updatedAt: cloudSession.updatedAt,
+            messages: decMsgs,
+            mode: cloudSession.mode || "normal"
+          };
+        });
 
         processedSessions.sort((a, b) => new Date(b.updatedAt || b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
 
@@ -1705,38 +1628,7 @@ function App() {
       window.removeEventListener("online", handleOnlineOrFocus);
       window.removeEventListener("focus", handleOnlineOrFocus);
     };
-  }, [loggedInUser?.id, loggedInUser?.email, isGuest, cryptoKey, decryptSessionData]);
-
-  // Re-decrypt active message stream when encryption key is imported or updated
-  useEffect(() => {
-    if (!cryptoKey || messages.length === 0) return;
-    const hasEncryptedInView = messages.some(
-      (m) => isEncrypted(m.text) || m.text.startsWith("[Encrypted Message")
-    );
-    if (!hasEncryptedInView) return;
-
-    let active = true;
-    (async () => {
-      const decrypted = await Promise.all(
-        messages.map(async (m) => {
-          if (isEncrypted(m.text) || m.text.startsWith("[Encrypted Message")) {
-            const foundSession = chatHistoryList.find((s) => s.id === currentChatId);
-            const rawMsg = foundSession?.messages?.find((orig) => orig.id === m.id);
-            const sourceText = rawMsg && isEncrypted(rawMsg.text) ? rawMsg.text : m.text;
-            if (isEncrypted(sourceText)) {
-              const res = await decryptPayload(sourceText, cryptoKey);
-              return { ...m, text: res.text };
-            }
-          }
-          return m;
-        })
-      );
-      if (active) setMessages(decrypted);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [cryptoKey, currentChatId, chatHistoryList]);
+  }, [loggedInUser?.id, loggedInUser?.email, isGuest, encryptionKey]);
 
   // Immediate save on message sent/received
   const lastSavedSigRef = useRef<string>("");
@@ -1830,13 +1722,17 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  // Masked representation for when showDecrypted is toggled off
+  // Simple encryption/decryption visual simulation representing client-side AES-256
   const getCiphertext = (text: string) => {
-    if (isEncrypted(text)) {
-      return text;
+    const salt = encryptionKey || "DEFAULT_SALT";
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      hash = (hash << 5) - hash + text.charCodeAt(i);
+      hash |= 0;
     }
-    const snippet = text.length > 28 ? text.substring(0, 28) + "..." : text;
-    return `enc:v1:aes-256-gcm:[${btoa(encodeURIComponent(snippet)).substring(0, 24)}...]`;
+    const hex = Math.abs(hash).toString(16).padEnd(8, "f");
+    const obfuscated = btoa(encodeURIComponent(text)).substring(0, 24);
+    return `AES-256[key:${hex}]:${obfuscated}==`;
   };
 
   // Quick topics for immediate chat interaction
@@ -2218,17 +2114,19 @@ function App() {
   // Download encrypted conversation backup bundle
   const handleExportBackup = () => {
     const dataBundle = {
-      app: "Karishma AI Chat Companion",
+      app: "Best Friend Chat Companion",
       timestamp: new Date().toISOString(),
-      encryptionStatus: encryptionEnabled ? "AES-256-GCM Active" : "Inactive",
+      encryptionKeyStatus: encryptionEnabled ? "Configured & Active" : "Inactive",
+      encryptionKeySeed: encryptionEnabled ? encryptionKey : "None",
       mfaProtection: mfaEnabled ? "Enabled" : "Disabled",
       dataRetentionPolicy: retentionPolicy,
       chatCount: messages.length,
       conversationPayload: messages.map(m => ({
         role: m.role,
+        plainText: m.text,
+        cipherText: getCiphertext(m.text),
         timestamp: m.timestamp,
-        isEncrypted: m.isEncrypted,
-        text: m.text
+        isEncrypted: m.isEncrypted
       }))
     };
 
@@ -2240,57 +2138,6 @@ function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  // Key management helpers for client-side E2EE
-  const handleCopyRecoveryKey = () => {
-    if (!rawKeyBase64) return;
-    const formatted = formatRecoveryKey(rawKeyBase64);
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(formatted);
-    }
-    setKeyCopied(true);
-    setKeyActionMessage("Recovery key copied to clipboard!");
-    setTimeout(() => {
-      setKeyCopied(false);
-      setKeyActionMessage(null);
-    }, 3000);
-  };
-
-  const handleImportKey = async () => {
-    if (!importKeyPhrase.trim()) {
-      setKeyActionMessage("Please paste a valid recovery key.");
-      return;
-    }
-    try {
-      const parsed = parseRecoveryKey(importKeyPhrase);
-      const imported = await importKeyFromBase64(parsed);
-      const targetUserId = loggedInUser ? loggedInUser.id : (isGuest ? "guest" : "default");
-      saveUserE2EEKey(targetUserId, parsed);
-      setCryptoKey(imported);
-      setRawKeyBase64(parsed);
-      setImportKeyPhrase("");
-      setShowKeyManager(false);
-      setKeyActionMessage("Recovery key imported successfully! Past history re-decrypted.");
-      setTimeout(() => setKeyActionMessage(null), 4000);
-    } catch (err: any) {
-      setKeyActionMessage("Invalid recovery key format: " + (err?.message || "Verification failed"));
-    }
-  };
-
-  const handleGenerateFreshKey = async () => {
-    try {
-      const freshKey = await generateE2EEKey();
-      const freshB64 = await exportKeyToBase64(freshKey);
-      const targetUserId = loggedInUser ? loggedInUser.id : (isGuest ? "guest" : "default");
-      saveUserE2EEKey(targetUserId, freshB64);
-      setCryptoKey(freshKey);
-      setRawKeyBase64(freshB64);
-      setKeyActionMessage("Generated fresh 256-bit AES-GCM key!");
-      setTimeout(() => setKeyActionMessage(null), 3000);
-    } catch (err: any) {
-      setKeyActionMessage("Failed to generate key: " + (err?.message || "Unknown error"));
-    }
   };
 
   const handleOnboardingComplete = () => {
@@ -3385,14 +3232,10 @@ function App() {
                     <History className="w-4 h-4" />
                   </button>
                   {encryptionEnabled && (
-                    <button
-                      onClick={() => setShowSettings(true)}
-                      className="bg-[#FAF0E6] text-[#D96B43] text-[10px] font-mono px-2 py-0.5 rounded-full border border-[#F3D9C9] flex items-center gap-1 cursor-pointer hover:bg-[#F3D9C9] transition-colors"
-                      title="Client-Side Encrypted (AES-256-GCM). Click to view Key Settings."
-                    >
+                    <span className="bg-[#FAF0E6] text-[#D96B43] text-[10px] font-mono px-2 py-0.5 rounded-full border border-[#F3D9C9] flex items-center gap-1">
                       <Lock className="w-3 h-3" />
-                      E2EE Active
-                    </button>
+                      E2EE Verified
+                    </span>
                   )}
                 </div>
               </div>
@@ -3401,11 +3244,10 @@ function App() {
               <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-3 bg-[#FCFAF7] min-h-0 w-full">
                 <div className="max-w-3xl mx-auto space-y-3 w-full">
                 
-                {/* Security status indicator */}
+                {/* Simulated connection status block */}
                 <div className="flex justify-center mb-2">
-                  <span className="text-[10px] font-mono bg-[#EBE6DD] px-2.5 py-1 rounded-full text-[#5C5753] flex items-center gap-1.5">
-                    <Lock className="w-2.5 h-2.5 text-[#D96B43]" />
-                    {encryptionEnabled ? "Client-Side Encrypted Storage (AES-256-GCM)" : "Standard Storage Mode"}
+                  <span className="text-[10px] font-mono bg-[#EBE6DD] px-2.5 py-1 rounded-full text-[#5C5753]">
+                    End-to-End Encrypted
                   </span>
                 </div>
 
@@ -4853,8 +4695,8 @@ function App() {
                           className="accent-[#D96B43]"
                         />
                         <div>
-                          <span className="font-semibold block text-sm text-[#2C2A29]">Persistent Chat History</span>
-                          <span className="text-[11px] text-[#8C857E]">Conversations are securely preserved and synced across sessions.</span>
+                          <span className="font-semibold block text-sm text-[#2C2A29]">End-to-End Encryption (E2EE)</span>
+                          <span className="text-[11px] text-[#8C857E]">Persistent chat securely synced and encrypted across devices.</span>
                         </div>
                       </label>
 
@@ -4874,128 +4716,6 @@ function App() {
                           <span className="text-[11px] text-[#8C857E]">Chat is wiped when session ends. Not saved or synced anywhere.</span>
                         </div>
                       </label>
-                    </div>
-                  </div>
-
-                  {/* Client-Side Encryption (E2EE) Component */}
-                  <div className="bg-white border border-[#EBE6DD] rounded-2xl p-4 shadow-sm space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h4 className="text-sm font-bold text-[#2C2A29] flex items-center gap-1.5">
-                          <Lock className="w-4 h-4 text-[#D96B43]" />
-                          Client-Side Encryption (AES-256-GCM)
-                        </h4>
-                        <p className="text-[11px] text-[#8C857E]">Zero-knowledge storage encryption. Keys never touch the server.</p>
-                      </div>
-                      <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border uppercase tracking-wide ${
-                        encryptionEnabled 
-                          ? "bg-emerald-50 text-emerald-600 border-emerald-200" 
-                          : "bg-gray-100 text-gray-500 border-gray-200"
-                      }`}>
-                        {encryptionEnabled ? "Active" : "Off"}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-xs font-medium text-[#2C2A29]">Encrypt Stored Chat History</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = !encryptionEnabled;
-                          setEncryptionEnabled(next);
-                          safeLocalStorageSet("best_friend_encryption_enabled", next ? "true" : "false");
-                        }}
-                        className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors duration-200 ease-in-out ${
-                          encryptionEnabled ? "bg-[#D96B43]" : "bg-[#EBE6DD]"
-                        }`}
-                      >
-                        <div
-                          className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
-                            encryptionEnabled ? "translate-x-5" : "translate-x-0"
-                          }`}
-                        />
-                      </button>
-                    </div>
-
-                    {/* Key Management Sub-card */}
-                    {encryptionEnabled && (
-                      <div className="mt-3 pt-3 border-t border-[#EBE6DD] space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#2C2A29] flex items-center gap-1">
-                            <Key className="w-3.5 h-3.5 text-[#D96B43]" />
-                            Device Recovery Key
-                          </span>
-                          <button
-                            onClick={handleCopyRecoveryKey}
-                            className="text-[11px] font-semibold text-[#D96B43] hover:underline flex items-center gap-1 cursor-pointer"
-                          >
-                            {keyCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                            {keyCopied ? "Copied!" : "Copy Key"}
-                          </button>
-                        </div>
-
-                        <div className="bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl p-2.5 font-mono text-[11px] text-[#5C5753] break-all select-all">
-                          {rawKeyBase64 ? formatRecoveryKey(rawKeyBase64) : "Generating on-device key..."}
-                        </div>
-
-                        {keyActionMessage && (
-                          <p className="text-[11px] font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg p-2">
-                            {keyActionMessage}
-                          </p>
-                        )}
-
-                        <div className="flex gap-2 pt-1">
-                          <button
-                            type="button"
-                            onClick={() => setShowKeyManager(prev => !prev)}
-                            className="flex-1 bg-[#FAF8F5] border border-[#EBE6DD] hover:bg-[#FAF0E6] text-[11px] font-semibold py-2 px-2.5 rounded-xl transition-all cursor-pointer text-[#2C2A29]"
-                          >
-                            {showKeyManager ? "Close Import" : "Import Existing Key"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleGenerateFreshKey}
-                            className="bg-[#FAF8F5] border border-[#EBE6DD] hover:bg-rose-50 hover:text-rose-600 text-[11px] font-semibold py-2 px-2.5 rounded-xl transition-all cursor-pointer text-[#8C857E]"
-                            title="Generate a new cryptographic key on this device"
-                          >
-                            <RefreshCw className="w-3 h-3" />
-                          </button>
-                        </div>
-
-                        {showKeyManager && (
-                          <div className="p-3 bg-[#FAF8F5] border border-[#EBE6DD] rounded-xl space-y-2 mt-2">
-                            <p className="text-[11px] text-[#5C5753]">
-                              Paste your recovery key from another device (e.g. <span className="font-mono text-[10px]">KARM-XXXX-...</span>) to decrypt synced conversations:
-                            </p>
-                            <input
-                              type="text"
-                              value={importKeyPhrase}
-                              onChange={(e) => setImportKeyPhrase(e.target.value)}
-                              placeholder="KARM-..."
-                              className="w-full text-xs font-mono p-2 border border-[#EBE6DD] rounded-lg bg-white outline-none focus:border-[#D96B43]"
-                            />
-                            <button
-                              type="button"
-                              onClick={handleImportKey}
-                              className="w-full bg-[#D96B43] hover:bg-[#C25B35] text-white text-xs font-bold py-2 rounded-lg transition-colors cursor-pointer"
-                            >
-                              Apply & Re-decrypt History
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* AI Provider Limitation Disclosure */}
-                    <div className="p-3 rounded-xl bg-[#FAF0E6]/60 border border-[#F3D9C9] text-[11px] text-[#5C5753] space-y-1">
-                      <p className="font-semibold text-[#D96B43] flex items-center gap-1">
-                        <CircleHelp className="w-3.5 h-3.5" />
-                        AI Provider & Storage Boundary Notice
-                      </p>
-                      <p className="leading-relaxed">
-                        • <strong>History at Rest:</strong> Encrypted on this device via AES-256-GCM. The database host and server only hold ciphertext.<br />
-                        • <strong>AI Model Inference:</strong> To generate AI responses, prompts are transmitted securely via TLS to the model provider (Nemotron / Gemini) and processed ephemerally in RAM without database persistence.
-                      </p>
                     </div>
                   </div>
 

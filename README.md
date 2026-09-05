@@ -1,6 +1,6 @@
 # Karishma AI
 
-A full-stack, multimodal conversational companion application built with a React 19 frontend, an Express.js backend, client-side zero-knowledge encrypted cloud storage (AES-256-GCM), and a cross-platform architecture packaged for both modern web browsers and Android via Capacitor.
+A full-stack, multimodal conversational companion application built with a React 19 frontend, an Express.js backend, client-side conversation history encryption, and a cross-platform architecture packaged for both modern web browsers and Android via Capacitor.
 
 [![Backend](https://img.shields.io/badge/Backend-Express.js-000000?style=flat-square&logo=express)](https://expressjs.com/)
 [![Frontend](https://img.shields.io/badge/Frontend-React%2019-61DAFB?style=flat-square&logo=react)](https://react.dev/)
@@ -8,7 +8,7 @@ A full-stack, multimodal conversational companion application built with a React
 [![Styling](https://img.shields.io/badge/Styling-Tailwind%20CSS-06B6D4?style=flat-square&logo=tailwindcss)](https://tailwindcss.com/)
 [![Database](https://img.shields.io/badge/Database-Supabase%20%2F%20Postgres-3ECF8E?style=flat-square&logo=supabase)](https://supabase.com/)
 [![Android](https://img.shields.io/badge/Android-Capacitor%208-119D55?style=flat-square&logo=capacitor)](https://capacitorjs.com/)
-[![Encryption](https://img.shields.io/badge/Storage%20Encryption-AES--256--GCM-emerald?style=flat-square&logo=shield)](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto)
+[![Security](https://img.shields.io/badge/Security-Client--Side%20Encryption-emerald?style=flat-square&logo=shield)](https://expressjs.com/)
 
 ---
 
@@ -16,8 +16,8 @@ A full-stack, multimodal conversational companion application built with a React
 
 - **Multimodal AI Companion Persona:** Warm, natural, empathetic conversation style with native fluency in English, Bengali (বাংলা), and Banglish (Bengali in Latin script).
 - **Multi-Provider AI Architecture:** Dynamic backend routing featuring NVIDIA Nemotron via OpenRouter as default, Google Gemini for chat, TTS, and multimodal vision, optional GLM/Z.ai support when configured, keyless Pollinations fallback, and a built-in offline rule engine.
-- **Client-Side Zero-Knowledge Storage Encryption:** All chat messages and conversation histories are encrypted on-device with authenticated AES-256-GCM before cloud transmission; the database and server store only encrypted ciphertext envelopes (`enc:v1:...`).
-- **Cryptographic Device Recovery Keys:** Format-standardized device recovery keys (`KARM-XXXX-...`) with PBKDF2/SHA-256 passphrase derivation for private key backup and multi-device decryption.
+- **Client-Side Storage Encryption:** Optional client-side symmetric stream encryption for saved conversation history before cloud synchronization, configured through in-app E2EE settings with custom key support.
+- **Secure Offline Sync & Persistence:** Resilient local caching and automatic cloud history synchronization to Supabase with offline queue flushing upon network restoration.
 - **Durable Email OTP Authentication:** Account registration and password resets backed by 6-digit cryptographic OTPs dispatched via Brevo and persisted in Supabase (`auth_otps`) with bcrypt hashing and strict attempt limits.
 - **Voice Input & Studio TTS:** Real-time speech input with Banglish phonetics normalization and expressive audio response generation using Gemini TTS (`gemini-3.1-flash-tts-preview`, voice "Kore") with automatic browser Web Speech API fallback.
 - **AI Image Generation & Ghibli Art Transformation:** Text-to-image synthesis and image-to-illustration transformation converting user photos into hand-drawn Japanese animation style art using Gemini vision and Pollinations.
@@ -42,7 +42,7 @@ A full-stack, multimodal conversational companion application built with a React
   <tr>
     <td width="50%" align="center">
       <img src="docs/screenshots/settings_security.png" alt="Settings & Privacy Storage" width="100%" /><br />
-      <sub><b>Settings, AES-256-GCM Encryption & Device Recovery Key</b></sub>
+      <sub><b>Settings, Theme Selection & Storage Policies</b></sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/screenshots/mobile_view.png" alt="Mobile Android View" width="100%" /><br />
@@ -173,9 +173,9 @@ The table below details every model supported by the codebase, clearly separatin
 
 ---
 
-### Encryption Model & Architectural Boundaries
+### Client-Side Storage Encryption Model
 
-Karishma features an authenticated **client-side encryption at rest** architecture using the W3C Web Crypto API (`crypto.subtle`).
+Karishma includes an optional client-side payload encryption feature designed to obfuscate persisted conversation data before saving to cloud storage.
 
 ```text
 [ Client Device: Browser / WebView ]
@@ -186,38 +186,33 @@ Karishma features an authenticated **client-side encryption at rest** architectu
   │     Response <─────────────(TLS/HTTPS)───── Express Server <──────(TLS)───────────┘
   │     (Processed in server RAM only; never written to database tables during /api/chat)
   │
-  └─ 2. Persistent Storage (Zero-Knowledge at Rest):
-        PlainText Message + Random 96-bit IV
+  └─ 2. Persistent Storage (Client-Side Encrypted Sync):
+        PlainText Message + Local Key (`encryptionKey`)
            │
-           ▼ [Web Crypto API: AES-256-GCM + 128-bit Authentication Tag]
-        Ciphertext: "enc:v1:<iv_base64>:<ciphertext_and_tag_base64>"
+           ▼ [Client-Side Symmetric Stream Transformation]
+        Cipher Payload: Base64 JSON Character Array
            │
            ▼ (HTTPS POST /api/history/save)
         Supabase Database (public.messages & public.conversations)
-        (Stores ONLY ciphertext envelope; server and database hold zero decryption keys)
+        (Stores cipher payload; server holds no encryption keys)
 ```
 
-#### Cryptographic Specification (`src/lib/crypto.ts`)
+#### Mechanism Details
 
-- **Cipher Algorithm:** AES-256-GCM (Galois/Counter Mode).
-- **Key Generation:** 256-bit symmetric keys generated via `crypto.subtle.generateKey`.
-- **Initialization Vector (IV):** 96-bit (12 bytes) cryptographically secure pseudo-random nonces generated per message via `crypto.getRandomValues()`. Zero nonce reuse.
-- **Integrity Tag:** 128-bit authentication tag. Payloads modified in transit or database storage fail authentication and are safely rejected.
-- **Envelope Format:** `enc:v1:<base64-iv>:<base64-ciphertext-and-tag>`.
-- **Passphrase Derivation:** PBKDF2 with SHA-256 (100,000 iterations) for passphrase-based recovery.
-- **Device Key Storage:** Raw 32-byte Base64 key saved in `localStorage` isolated by user ID (`karishma_e2ee_key_<userId>`).
-- **Recovery Key Format:** Exported as formatted chunks (`KARM-XXXX-XXXX-...`) for manual backup and multi-device restoration.
-- **Title Anonymization:** When encrypted messages are synced, the backend automatically substitutes the conversation title with `"Encrypted Conversation"` to avoid metadata leaks.
+- **Key Configuration:** The key is configured on the client (defaulting to `"BEST_FRIEND_E2EE_KEY"` and stored in `localStorage` under `best_friend_encryption_key`).
+- **Transformation:** When enabled (`encryptionEnabled: true`), messages are transformed via a symmetric XOR stream cipher (`m.text.charCodeAt(i) ^ encryptionKey.charCodeAt(i % encryptionKey.length)`) and serialized as Base64 JSON character arrays before cloud transmission.
+- **Client Decryption:** Upon loading historical sessions from Supabase, the client reverses the transformation using the locally held key.
+- **Visual Ciphertext Simulation:** The UI includes a client-side visual masking helper (`getCiphertext()`) and status badges (`E2EE Verified` / `E2EE Node`) when encryption mode is active.
 
-#### Honest Security Boundary: Storage at Rest vs. AI Inference
+> [!NOTE]
+> **Technical Scope:** This client-side symmetric stream transformation is a lightweight payload masking mechanism designed for client-controlled persistence obfuscation. It does not replace industry-standard authenticated cryptographic standards (such as AES-GCM) or full end-to-end encryption across AI inference pipelines.
+
+#### Honest Security Boundary: Storage vs. AI Inference
 
 > [!IMPORTANT]
-> **Karishma provides client-side zero-knowledge encryption for persisted conversation data at rest.** It does **not** provide complete end-to-end encryption across external AI model inference.
->
 > - **Inference Requirement:** Hosted LLMs (NVIDIA Nemotron, Google Gemini, etc.) require readable prompt text to execute natural language reasoning.
 > - **Ephemeral Processing:** During `/api/chat`, prompts travel over TLS to the backend and over TLS to the AI provider. The backend holds prompts in RAM only for the duration of the HTTP call and does not persist them.
-> - **Database Compromise Protection:** An attacker or administrator with access to the Supabase database or server disk can inspect only encrypted ciphertext (`enc:v1:...`) and cannot read conversational history.
-> - **AI Provider Visibility:** The external AI provider processes the prompt content during token generation according to its own privacy policy.
+> - **AI Provider Visibility:** The external AI provider processes prompt content during generation according to its own privacy policy.
 
 ---
 
@@ -249,12 +244,12 @@ Karishma provides a multi-stage authentication system supporting both registered
   - Stored in PostgreSQL tables: `conversations`, `messages`, `users`, and `auth_otps`.
   - Accessed exclusively server-side through `SUPABASE_SERVICE_ROLE_KEY` with RLS protection.
 - **Client Cache & Device Storage (`localStorage`):**
-  - Active session state, client encryption keys, response mode preferences, and offline queues.
+  - Active session state, client encryption key, response mode preferences, and offline queues.
 - **Offline Sync Queue:**
   - If a network failure occurs during conversation saving or deletion, operations are queued in `localStorage` under `best_friend_sync_queue_<userId>`.
   - The client listens for `window.addEventListener('online')` to automatically flush pending operations when connectivity is restored.
 - **Retention Settings:**
-  - **Persistent Chat History:** Conversations are preserved locally and synchronized to Supabase in encrypted form.
+  - **Persistent Chat History:** Conversations are preserved locally and synchronized to Supabase.
   - **Sessional Memories:** Chat history is kept in memory only for the current session and discarded upon closing.
 
 ---
@@ -306,7 +301,7 @@ Karishma packages its web application for Android using **Capacitor 8**, wrappin
 
 - **Application ID:** `com.karishma.ai` (configured in `capacitor.config.ts` and `android/app/build.gradle`).
 - **SDK Targets:** `minSdkVersion = 24` (Android 7.0 Nougat), `compileSdkVersion = 36`, `targetSdkVersion = 36`.
-- **Scheme Isolation:** Uses `androidScheme: 'https'` (`https://localhost`), ensuring standard Web Crypto API (`crypto.subtle`), LocalStorage, and IndexedDB operate correctly inside the WebView.
+- **Scheme Isolation:** Uses `androidScheme: 'https'` (`https://localhost`), ensuring LocalStorage and IndexedDB operate correctly inside the WebView.
 - **Asset Separation:** Builds to a dedicated `dist-android/` directory (`npm run build:android`). This ensures server bundles (`dist/server.cjs`) and backend secrets are never included in the APK.
 - **Dynamic API Base:** `src/lib/native.ts` rewrites relative `/api/...` calls to the URL specified in `.env.android` (`VITE_API_BASE`). Can also be overridden at runtime via `localStorage.setItem('karishma_api_base', 'https://your-url')`.
 
@@ -382,8 +377,8 @@ Karishma is configured for one-click container deployment via `render.yaml` and 
 
 Run `supabase/schema.sql` (or migrations in `supabase/migrations/`) in your Supabase SQL Editor:
 
-1. **`conversations`**: Stores conversation IDs, user IDs, encrypted titles, and timestamps.
-2. **`messages`**: Stores message payloads (`role`, `content` containing `enc:v1:...` ciphertexts, and `is_encrypted` flags).
+1. **`conversations`**: Stores conversation IDs, user IDs, titles, and timestamps.
+2. **`messages`**: Stores message payloads (`role`, `content`, and `is_encrypted` flags).
 3. **`users`**: Stores user profiles, emails, bcrypt-hashed passwords, and session tokens.
 4. **`auth_otps`**: Stores durable bcrypt-hashed OTP codes, expiration timestamps, resend cooldowns, and pending registration payloads.
 5. **Row Level Security (RLS):** Enabled on all tables. Queries from the backend bypass RLS using `SUPABASE_SERVICE_ROLE_KEY`.
@@ -469,8 +464,7 @@ Karishma-Ai-chatbot/
 │   └── screenshots/           # Real application screenshots
 ├── public/                    # Static public assets and web manifest
 ├── scripts/
-│   ├── migrate_db_to_supabase.ts # Migration script for database records
-│   └── test_crypto_e2ee.ts       # Automated cryptographic test suite
+│   └── migrate_db_to_supabase.ts # Migration script for database records
 ├── server/
 │   ├── otpStore.ts            # Durable OTP storage with Supabase fallback
 │   ├── selfRepairEngine.ts    # Code repair and diagnostic engine
@@ -479,7 +473,6 @@ Karishma-Ai-chatbot/
 ├── src/
 │   ├── components/            # React UI components (Modals, ErrorBoundary)
 │   ├── lib/
-│   │   ├── crypto.ts          # AES-256-GCM client-side encryption module
 │   │   ├── firebase.ts        # Firestore client and offline sync queue
 │   │   ├── native.ts          # Capacitor Android bridge & API URL remapping
 │   │   └── selfHealing.ts     # Frontend retry logic & error logger
@@ -521,7 +514,7 @@ The following table summarizes the primary endpoints exposed by `server.ts`:
 | `POST` | `/api/auth/forgot-password`| Request password reset code via email | Rate-limited |
 | `POST` | `/api/auth/reset-password` | Complete password reset with verified OTP | Rate-limited |
 | `POST` | `/api/history` | Fetch persisted chat sessions for user | User ID scoped |
-| `POST` | `/api/history/save` | Persist encrypted conversation payload | User ID scoped |
+| `POST` | `/api/history/save` | Persist conversation payload | User ID scoped |
 | `POST` | `/api/history/delete` | Delete conversation session | User ID scoped |
 | `POST` | `/api/self-repair/*` | Diagnostic self-repair & rollback engine | `devOnlyGate` (Token required) |
 
@@ -529,21 +522,14 @@ The following table summarizes the primary endpoints exposed by `server.ts`:
 
 ## 🧪 Verification & Testing
 
-### 1. Cryptographic Security Tests
-Verify AES-256-GCM encryption, random IV generation, tampering detection, wrong-key failure, and PBKDF2 passphrase derivation:
-
-```bash
-npx tsx scripts/test_crypto_e2ee.ts
-```
-
-### 2. TypeScript Compilation Check
+### 1. TypeScript Compilation Check
 Verify type integrity across all server and frontend code:
 
 ```bash
 npm run lint
 ```
 
-### 3. Backend Health Verification
+### 2. Backend Health Verification
 Query the local or deployed health endpoint:
 
 ```bash
@@ -573,7 +559,7 @@ Expected response format:
 
 - **Never Commit Secrets:** Never commit `.env` files, Supabase service-role keys, or provider API keys to public repositories.
 - **Android APK Distribution:** APK packages are distributable zip archives. Never embed private API keys in `.env.android` or client source files.
-- **Encrypted Storage Boundaries:** Losing your local device encryption key or formatted recovery key (`KARM-...`) will make previous encrypted messages permanently unrecoverable. The server administrator cannot decrypt your stored conversations.
+- **Storage Encryption Scope:** When client-side encryption is enabled, historical messages are encoded on the device before cloud storage. The server does not store or process the client encryption key.
 - **Inference Scope:** Prompts sent during live chat are processed in RAM by the backend and transmitted to the selected AI provider to generate responses. Do not confuse client-side storage encryption with complete zero-knowledge AI inference.
 
 ---

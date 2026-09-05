@@ -68,9 +68,6 @@ function titleFor(session: PersistedChatSession, existingTitle?: string): string
   }
   const firstUserMessage = session.messages?.find((message) => message?.role === "user" && message.text)?.text?.trim();
   if (firstUserMessage) {
-    if (firstUserMessage.startsWith("enc:v1:")) {
-      return "Encrypted Conversation";
-    }
     return firstUserMessage.slice(0, 40) + (firstUserMessage.length > 40 ? "..." : "");
   }
   return existingTitle && existingTitle !== "New Conversation" ? existingTitle : "Chat";
