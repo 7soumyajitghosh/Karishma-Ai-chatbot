@@ -12,6 +12,7 @@
   // Build + push the existing Dockerfile as the container image.
   "containers": [
     {
+      "name": "karishma-ai-chatbot",
       "class_name": "KarishmaContainer",
       "image": "./Dockerfile",
       "max_instances": 1
