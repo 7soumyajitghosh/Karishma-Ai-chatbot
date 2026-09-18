@@ -1,4 +1,5 @@
 {
+  "$schema": "node_modules/wrangler/config-schema.json",
   // Cloudflare Workers + Containers config. The Worker below is a thin router;
   // all real work happens in the container, which runs the SAME server.ts
   // (built to dist/server.cjs by the existing Dockerfile). No backend rewrite.
@@ -6,6 +7,7 @@
   "main": "cloudflare/worker.js",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
 
   // Build + push the existing Dockerfile as the container image.
   "containers": [
